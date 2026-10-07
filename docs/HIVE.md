@@ -36,6 +36,8 @@ The token you hold, its address and the holders' share never change; what a trad
 | Liquidity added by a sink belongs to the hook and has no removal path, ever | `addLiquidity`, no negative delta anywhere |
 | Position fees in the reward currency go to holders, LING fees back to the sink | `_settleSide` |
 | Configuration changes come only from `council` | `onlyCouncil`, `SwarmlingsCouncil` |
+| Every LING / reward pool with the hook pays the holder fee; modules run on the launch pool only | `_isCharged`, `_isLaunch` |
+| Liquidity removed within 10 blocks of its addition forfeits part of its reward fees to holders; never blocked | `JIT_BLOCKS`, `_jitPenalty` |
 | Snipe tax: buys in the first 60 s pay up to 40% extra, falling to zero, to holders; sells never | `snipeBps()`, `SNIPE_WINDOW`, `SNIPE_MAX_BPS` |
 | The council can be handed on or set to `address(0)`, which freezes everything | `setCouncil` |
 
@@ -54,8 +56,8 @@ they spend, sells `bps` of what the pool pays out; up-front fees are checked aga
 and holders get the rest, which includes anything a quoter added. `FeeCollected(buy, fee, toHolders, bps)` logs
 every swap.
 
-After the swap, every slice with `poke = true` whose sink reports `due()` is poked with `POKE_GAS`. A sink that
-is not due, or fails, costs the trader nothing.
+After the swap, the first slice with `poke = true` whose sink reports `due()` is poked with `POKE_GAS` (one
+poke per swap). A sink that is not due, or fails, costs the trader nothing.
 
 ## Services for sinks
 

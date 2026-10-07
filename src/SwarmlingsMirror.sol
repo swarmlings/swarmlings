@@ -5,6 +5,11 @@ import {DN404Mirror} from "dn404/DN404Mirror.sol";
 
 interface IOwnerView {
     function owner() external view returns (address);
+    function RENDERER() external view returns (address);
+}
+
+interface ILogo {
+    function logoSVG() external view returns (string memory);
 }
 
 interface ITransferValidator {
@@ -45,6 +50,61 @@ contract SwarmlingsMirror is DN404Mirror, ICreatorToken {
     /// @dev Read live: the base cannot answer while it is still being constructed, so nothing is cached.
     function owner() public view override returns (address) {
         return IOwnerView(baseERC20()).owner();
+    }
+
+    /// @notice ERC-7572 collection metadata, built on chain; the logo comes from the token's renderer.
+    function contractURI() external view returns (string memory) {
+        string memory image;
+        try ILogo(IOwnerView(baseERC20()).RENDERER()).logoSVG() returns (string memory svg) {
+            image = string.concat('"image":"data:image/svg+xml;utf8,', _escape(bytes(svg)), '",');
+        } catch {}
+        return string.concat(
+            'data:application/json;utf8,{"name":"Swarmlings","description":"3,333 riso-printed robots that live inside a token balance: hold 300,000 LING and a Swarmling appears in your wallet. Every swap pays 1.25% to the people who hold them.",',
+            image,
+            '"external_link":"https://x.com/SwarmlingsIMD","collaborators":["',
+            _hex(IOwnerView(baseERC20()).owner()),
+            '"]}'
+        );
+    }
+
+    /// @dev Makes an SVG safe inside a JSON string and a utf8 data URI: quotes escaped, `#` and `%` encoded.
+    function _escape(bytes memory svg) private pure returns (string memory) {
+        bytes memory out = new bytes(svg.length * 3);
+        uint256 n;
+        for (uint256 i; i < svg.length; ++i) {
+            bytes1 c = svg[i];
+            if (c == '"') {
+                out[n++] = "\\";
+                out[n++] = '"';
+            } else if (c == "#") {
+                out[n++] = "%";
+                out[n++] = "2";
+                out[n++] = "3";
+            } else if (c == "%") {
+                out[n++] = "%";
+                out[n++] = "2";
+                out[n++] = "5";
+            } else {
+                out[n++] = c;
+            }
+        }
+        assembly ("memory-safe") {
+            mstore(out, n)
+        }
+        return string(out);
+    }
+
+    function _hex(address a) private pure returns (string memory) {
+        bytes16 digits = "0123456789abcdef";
+        bytes memory out = new bytes(42);
+        out[0] = "0";
+        out[1] = "x";
+        uint160 v = uint160(a);
+        for (uint256 i = 41; i > 1; --i) {
+            out[i] = digits[v & 0xf];
+            v >>= 4;
+        }
+        return string(out);
     }
 
     function getTransferValidator() external pure returns (address) {

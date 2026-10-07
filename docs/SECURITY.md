@@ -20,8 +20,11 @@
   None of that can touch LING balances, swaps or rewards, and LING transfers always move NFTs.
 - **Validator.** OpenSea's registry is external code with its own administrators. It only ever sees NFT
   transfers made through the NFT contract; if it ever refused them, holders still move NFTs by moving LING.
-- **Reward currency.** IMD on mainnet is assumed to be a plain ERC-20 (`transfer` returns true or nothing).
-  The token counts rewards by balance difference, so a fee-on-transfer token would still be counted correctly.
+- **Reward currency.** IMD on mainnet (`BridgedFP`, a LayerZero OFT, verified on Sourcify) has no pause,
+  blocklist or fee switch: transfers cannot be stopped, so hook-owned liquidity and holder payouts cannot be
+  frozen by its owner. Its owner (`0x047F…54B7`) controls the bridge peers and delegate, so bridged supply is a
+  trust point, and can rename the token. The token counts rewards by balance difference, so even a
+  fee-on-transfer token would be counted correctly.
 - **Renderer.** Immutable, no owner. The token calls it only in `tokenURI`, via a staticcall wrapped in
   try/catch; it cannot affect balances, transfers, fees or rewards.
 
@@ -33,6 +36,18 @@
 - Every wallet's NFT count equals `balance / UNIT`; only wallets hold NFTs; at most 3,333 exist.
 
 ## Design choices worth reviewing
+
+- **EIP-7702 wallets.** DN404 treats any code-bearing account as a contract that skips NFTs. A delegated EOA has
+  exactly 23 bytes of code starting with `0xef0100`, a prefix EIP-3541 forbids for deployed contracts, so the
+  token treats such accounts as wallets. A wallet's explicit `setSkipNFT` still wins.
+- **Charged pools.** Fees apply to every LING / reward pool with this hook, so a fee-free tier cannot be
+  opened; modules and sinks only run on the launch pool, whose binding is still first-come at the launch tier.
+- **JIT penalty.** `afterRemoveLiquidity` returns a hook delta equal to the reward-currency fees of a position
+  that leaves within `JIT_BLOCKS` of its last addition (scaled down linearly) and mints the same amount as
+  holder claims; the LP's principal and LING fees are untouched, and nothing can revert. The hook's own
+  positions are never penalized because v4 skips the hook's callbacks for its own actions.
+- **One poke per swap.** At most one due sink is poked after a swap, so a trade needs at most `POKE_GAS`
+  extra; the others wait for the next swap or a manual `poke()`.
 
 - **Snipe tax.** `snipeBps()` is a pure function of time since `launchedAt`: 40% at the launch block, linear to
   0 at 60 seconds, buys only, added after the council cap so the cap stays a bound on governance, not on

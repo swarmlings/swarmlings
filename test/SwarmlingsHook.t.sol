@@ -130,16 +130,17 @@ abstract contract HookSuite is SwarmlingsBase {
         );
     }
 
-    function test_otherPoolsPayNoFee() public {
+    function test_everyLingRewardPoolPaysTheHolderFee() public {
         PoolKey memory other = launchKey;
         other.fee = 3000;
         other.tickSpacing = 60;
         manager.initialize(other, TickMath.getSqrtPriceAtTick(startTick));
-        int24 lo = (startTick / 60 - 10) * 60;
         _dealReward(launcher, 100 * BIG);
         vm.prank(launcher);
         modifyLiquidityRouter.modifyLiquidity{value: native ? 10 * BIG : 0}(
-            other, ModifyLiquidityParams(lo, lo + 1200, 1e20, 0), ""
+            other,
+            ModifyLiquidityParams(TickMath.minUsableTick(SPACING), TickMath.maxUsableTick(SPACING), 1e20, 0),
+            ""
         );
         bool zeroForOne = rewardFirst;
         vm.prank(alice);
@@ -153,7 +154,30 @@ abstract contract HookSuite is SwarmlingsBase {
             PoolSwapTest.TestSettings(false, false),
             ""
         );
-        assertEq(hook.totalFees(), 0);
+        assertEq(hook.totalFees(), BIG / 100 * 125 / 10000, "a cheaper tier cannot dodge the holders");
+        assertEq(
+            PoolId.unwrap(hook.launchPool()), PoolId.unwrap(launchKey.toId()), "but it is not the launch pool"
+        );
+    }
+
+    function test_jitPenaltyOnlyWithinTheWindow() public {
+        int24 lo = TickMath.minUsableTick(SPACING);
+        int24 hi = TickMath.maxUsableTick(SPACING);
+        // launcher's position was added in setUp, in this block: trade, then remove within the window
+        _buyExactIn(alice, BIG);
+        uint256 before = hook.totalFees();
+        vm.roll(block.number + 2);
+        vm.prank(launcher);
+        modifyLiquidityRouter.modifyLiquidity(launchKey, ModifyLiquidityParams(lo, hi, -1e15, 0), "");
+        uint256 penalty = hook.totalFees() - before;
+        assertGt(penalty, 0, "fees of a fast remove go to holders");
+        // the rest of the fees were paid out at the next removal, after the window: no penalty
+        vm.roll(block.number + hook.JIT_BLOCKS());
+        before = hook.totalFees();
+        vm.prank(launcher);
+        modifyLiquidityRouter.modifyLiquidity(launchKey, ModifyLiquidityParams(lo, hi, -1e15, 0), "");
+        assertEq(hook.totalFees(), before, "no penalty after the window");
+        assertEq(hook.totalFees(), hook.distributed() + hook.pendingFees(), "ledger");
     }
 
     // ------------------------------------------------------------------ NFTs through the pool

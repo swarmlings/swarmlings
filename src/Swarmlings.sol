@@ -47,8 +47,9 @@ contract Swarmlings is DN404 {
     /// @notice Rewards that arrive during one epoch are paid out evenly over the next one.
     uint256 public constant EPOCH = 1 days;
     /// @notice A transfer that would mint more NFTs than this at once switches the receiver to skipNFT instead,
-    /// so a large buy still fits in a transaction; the receiver can opt back in later with `setSkipNFT(false)`.
-    uint256 public constant MAX_MINT_PER_TRANSFER = 1_000;
+    /// so a large buy still fits under Ethereum's 16,777,216-gas transaction cap (EIP-7825): minting 800 costs
+    /// about 9.7M gas, leaving room for the router, the hook and its modules.
+    uint256 public constant MAX_MINT_PER_TRANSFER = 800;
 
     uint256 public constant ETH_POT = 0;
     uint256 public constant TOKEN_POT = 1;
@@ -120,6 +121,38 @@ contract Swarmlings is DN404 {
     /// @notice For marketplaces only (OpenSea Studio reads it through the NFT contract). No power here.
     function owner() public pure returns (address) {
         return DEV;
+    }
+
+    /// @dev Contracts skip NFTs by default; an EIP-7702 delegated wallet (23 bytes of code starting with
+    /// 0xef0100, a prefix no deployed contract can have) is still a person's wallet and gets its Swarmlings.
+    function _skipNFTDefault(address account) internal view override returns (bool) {
+        uint256 size;
+        assembly ("memory-safe") {
+            size := extcodesize(account)
+        }
+        if (size == 0) return false;
+        if (size == 23) {
+            bytes3 prefix;
+            assembly ("memory-safe") {
+                extcodecopy(account, 0, 0, 3)
+                prefix := mload(0)
+            }
+            if (prefix == 0xef0100) return false;
+        }
+        return true;
+    }
+
+    /// @notice The ids the next `n` mints will use, in order: DN404 hands out ids in a cycle, skipping the ones
+    /// that exist, so a burned id comes back when the cycle reaches it.
+    function nextMintIds(uint256 n) external view returns (uint256[] memory ids) {
+        DN404Storage storage $ = _getDN404Storage();
+        ids = new uint256[](n);
+        uint256 id = _wrapNFTId($.nextTokenId, MAX_NFTS);
+        for (uint256 i; i < n; ++i) {
+            while (_exists(id)) id = _wrapNFTId(id + 1, MAX_NFTS);
+            ids[i] = id;
+            id = _wrapNFTId(id + 1, MAX_NFTS);
+        }
     }
 
     function _unit() internal pure override returns (uint256) {

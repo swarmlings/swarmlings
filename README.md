@@ -15,7 +15,7 @@ buys that falls from 40% to zero, paid to holders. See [docs/HIVE.md](docs/HIVE.
 | Contract | What it does |
 | --- | --- |
 | [`Swarmlings`](src/Swarmlings.sol) | DN404 token + `DN404Mirror` NFT. 1,000,000,000 LING, 18 decimals, minted once to the deployer. 300,000 LING = 1 NFT, at most 3,333. Holds and pays out NFT rewards. |
-| [`SwarmlingsMirror`](src/SwarmlingsMirror.sol) | The ERC-721 side (DN404 mirror): 5% creator fee (ERC-2981) to the token and OpenSea creator-fee enforcement (ERC721-C). |
+| [`SwarmlingsMirror`](src/SwarmlingsMirror.sol) | The ERC-721 side (DN404 mirror): 5% creator fee (ERC-2981) to the token, OpenSea creator-fee enforcement (ERC721-C) and onchain collection metadata (ERC-7572 `contractURI`). |
 | [`SwarmlingsHook`](src/SwarmlingsHook.sol) | The Hive: Uniswap v4 hook with all 14 flags. Takes 1.25% of every swap in the launch pool, in the paired currency, for NFT holders, and runs the attached slices and modules. |
 | [`SwarmlingsCouncil`](src/SwarmlingsCouncil.sol) | The one address that can change the Hive's slices and modules (owner: the dev wallet, changes apply at once, every change logged with a memo); also an onchain journal. Same CREATE2 address on every chain. |
 | [`modules/`](src/modules/) | The primitives: `TreasurySink`, `BuybackBurn`, `AutoLiquidity`, `TwapOracle`, `MaxBuy`, `VolatilityFee`. None active at launch. |
@@ -26,7 +26,8 @@ buys that falls from 40% to zero, paid to holders. See [docs/HIVE.md](docs/HIVE.
 - **NFTs follow the balance.** A wallet holding `n × 300,000` LING owns `n` Swarmlings. Buying across a unit
   mints, selling below one burns. Transfers between NFT holders move NFTs directly.
 - **Contracts skip NFTs** (DN404 default), so the factory, the PoolManager, routers, sinks and distributors
-  never hold any. Any contract, or an EIP-7702 delegated wallet, can opt in with `setSkipNFT(false)`.
+  never hold any; a contract can opt in with `setSkipNFT(false)`. An EIP-7702 delegated wallet (a smart
+  account upgraded from an EOA) counts as a wallet and gets its Swarmlings like any other.
 - **Plain transfers.** No fee or burn on transfer; every transfer moves exactly the amount stated. Anyone may
   `burn` their own LING (the buyback primitive does).
 - **Art:** `tokenURI(id)` returns exactly what the renderer returns. If the renderer has no code or reverts,
@@ -79,16 +80,18 @@ end of the list.)
 
 ### Very large buys
 
-Minting is linear in NFTs, so a transfer that would mint more than 1,000 Swarmlings at once would not fit in a
-block. Instead of reverting, the token switches that receiver to skipNFT (`AutoSkipNFT` event): the LING
+Minting is linear in NFTs, so a transfer that would mint more than 800 Swarmlings at once would not fit under
+Ethereum's 16,777,216-gas transaction cap (EIP-7825, Fusaka) once the router, the hook and its modules are
+counted. Instead of reverting, the token switches that receiver to skipNFT (`AutoSkipNFT` event): the LING
 arrives, no NFT is minted. Such a wallet stays in skip mode until its LING is split across wallets that each
-need at most 1,000; a wallet holding more than 300,000,000 LING is not meant to hold NFTs.
+need at most 800; a wallet holding more than 240,000,000 LING is not meant to hold NFTs.
 
 ### The hook
 
 - Constructor: the chain's PoolManager and the token. The first pool that pairs LING with the token's reward
-  currency at the launch tier (static 1.25% LP fee) becomes `launchPool`; pools at other tiers or with a
-  dynamic fee trade fee-free and cannot take its place.
+  currency at the launch tier (static 1.25% LP fee) becomes `launchPool`, where modules and sinks run. Every
+  other pool with this hook that pairs LING with the reward currency, at any tier, pays the same holder fee,
+  so no cheaper venue can be opened around the holders; pools pairing LING with anything else are fee-free.
 - **Fee:** `HOLDER_FEE_BPS = 125`, always in the reward currency, in all four swap modes: buys pay 1.25% of
   everything they spend, sells pay 1.25% of what the pool pays out. A swap that took its fee up front but did
   not fill completely reverts (`PartialFill`). Slices and quoters can raise the total to at most `MAX_FEE_BPS`
@@ -102,6 +105,9 @@ need at most 1,000; a wallet holding more than 300,000,000 LING is not meant to 
 - **Snipe tax:** for the first 60 seconds after the launch pool opens, buys pay an extra fee that starts at
   40% and falls linearly to zero (`snipeBps()`), on top of everything else and outside the council's cap. It
   goes to holders. Sells never pay it.
+- **JIT guard:** liquidity removed within 10 blocks of being added forfeits a share of its reward-currency
+  fees to holders, falling to zero over the window (`JitPenalty`). Removal is never blocked; principal is
+  never touched.
 - **Council:** only `SwarmlingsCouncil` can set slices and modules or hand governance on; its owner (the dev
   wallet) applies changes at once, each with a logged memo. At launch there are no slices and no modules.
 
@@ -120,9 +126,9 @@ under `lib/` (see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)); tests need no n
 
 The suite (192 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
 IMD as currency1): all four fee modes with exact amounts, partial fills, other pools and launch-pool
-hijacking, unit boundaries (299,999.99 vs 300,000 LING), contracts and EIP-7702 wallets skipping NFTs,
+hijacking, unit boundaries (299,999.99 vs 300,000 LING), contracts skipping NFTs and EIP-7702 wallets not,
 marketplace NFT sales, burns, `keep`, day-by-day payouts and quiet days, a flash-loan attempt to snipe a
-distribution, rewards with no holders, the 1,000-NFT auto-skip, creator fees split with DEV, both currencies
+distribution, rewards with no holders, the 800-NFT auto-skip, creator fees split with DEV, both currencies
 on mainnet, a LING-only seeded pool, a 100-NFT whale buy, reentrancy on `claim` and `syncToken`, the
 validator, the renderer fallback, and stateful invariants (hook ledger, solvency, booked claims, NFT counts,
 nothing lost once every day has paid out). `test/Hive.t.sol` covers the council, slice and module

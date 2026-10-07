@@ -166,14 +166,34 @@ contract SwarmlingsTest is Test {
         assertEq(mirror.balanceOf(address(c)), 1, "an opted-in contract gets them");
     }
 
-    function test_codeBearingEoaSkipsUntilOptIn() public {
+    function test_delegatedWalletsGetNftsLikeAnyWallet() public {
         vm.etch(alice, abi.encodePacked(hex"ef0100", address(0x1234))); // EIP-7702 delegation designator
+        assertFalse(ling.getSkipNFT(alice), "a 7702 wallet is still a person's wallet");
         _give(alice, UNIT);
-        assertEq(mirror.balanceOf(alice), 0);
-        vm.prank(alice);
-        ling.setSkipNFT(false);
-        _give(alice, 1);
         assertEq(mirror.balanceOf(alice), 1);
+        // a 23-byte contract without the 7702 prefix is a contract
+        vm.etch(bob, abi.encodePacked(hex"600000", address(0x1234)));
+        assertTrue(ling.getSkipNFT(bob));
+        _give(bob, UNIT);
+        assertEq(mirror.balanceOf(bob), 0);
+        // explicit choices still win
+        vm.prank(alice);
+        ling.setSkipNFT(true);
+        _give(alice, UNIT);
+        assertEq(mirror.balanceOf(alice), 1);
+    }
+
+    function test_nextMintIdsFollowTheCycle() public {
+        _give(alice, UNIT * 3); // ids 1,2,3
+        uint256[] memory next = ling.nextMintIds(2);
+        assertEq(next[0], 4);
+        assertEq(next[1], 5);
+        vm.prank(alice);
+        ling.transfer(launcher, UNIT); // burns id 3
+        next = ling.nextMintIds(1);
+        assertEq(next[0], 4, "the cycle moves on; 3 comes back when the cycle wraps");
+        uint256[] memory later = ling.nextMintIds(3333);
+        assertEq(later[3330], 3, "after 4..3333 the burned id 3 is next");
     }
 
     // ------------------------------------------------------------------ streamed rewards
@@ -338,9 +358,10 @@ contract SwarmlingsTest is Test {
     }
 
     function test_hugeBuySwitchesToSkipInsteadOfRunningOutOfGas() public {
-        _give(alice, UNIT * 1000); // exactly the limit: minted
-        assertEq(mirror.balanceOf(alice), 1000);
-        _give(bob, UNIT * 1001); // one over: skipped, no revert
+        uint256 limit = ling.MAX_MINT_PER_TRANSFER();
+        _give(alice, UNIT * limit); // exactly the limit: minted
+        assertEq(mirror.balanceOf(alice), limit);
+        _give(bob, UNIT * (limit + 1)); // one over: skipped, no revert
         assertEq(mirror.balanceOf(bob), 0);
         assertTrue(ling.getSkipNFT(bob));
         // opting back in does not help while the wallet still needs more than the limit in one go
@@ -351,10 +372,10 @@ contract SwarmlingsTest is Test {
         assertTrue(ling.getSkipNFT(bob));
         // the way out: split the LING across wallets, each below the limit
         vm.startPrank(bob);
-        ling.transfer(carol, UNIT * 501);
-        ling.transfer(carol, UNIT * 501);
+        ling.transfer(carol, UNIT * (limit / 2 + 1));
+        ling.transfer(carol, UNIT * (limit / 2 + 1));
         vm.stopPrank();
-        assertEq(mirror.balanceOf(carol), 1002);
+        assertEq(mirror.balanceOf(carol), limit + 2);
     }
 
     function test_claimCannotBeReentered() public {

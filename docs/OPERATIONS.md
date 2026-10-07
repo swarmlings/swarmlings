@@ -12,7 +12,8 @@
 | Transfer validator | OpenSea `0xA000027A9B2802E1ddf7000061001e5c005A0000`, fixed |
 | Reward payout | what arrives on one UTC day is paid out over the next day, per NFT per second |
 | Keep | `keep(ids)` puts the named ids first in the caller's list (last to burn) |
-| Auto skip | a transfer that would mint more than 1,000 NFTs switches the receiver to skipNFT instead |
+| Auto skip | a transfer that would mint more than 800 NFTs switches the receiver to skipNFT instead (EIP-7825 cap: minting 800 ≈ 9.7M gas, 1,000 ≈ 12.1M) |
+| JIT guard | `JIT_BLOCKS = 10`: fees of liquidity removed within 10 blocks of its addition go to holders, pro rata |
 | Renderer | `0x8d79e6677FA6E52190B39096f8496628811D8281` (CREATE2, see below) |
 | Hook constructor | `($poolManager, $token)` |
 | Hook flags | all 14 (`0x3FFF`), so later modules can use any callback |
@@ -21,7 +22,7 @@
 | Snipe tax | buys in the first 60 s after the pool opens: extra `SNIPE_MAX_BPS = 4000` falling linearly to 0 (`snipeBps()`), to holders; sells exempt |
 | Modules at launch | none; see docs/HIVE.md for the shipped primitives and how they are attached |
 | Hand-over minimum | 0.01 ETH, or 5 IMD |
-| Launch pool | reward currency / LING, static LP fee 12500 (IMD policy tier), any tick spacing (60 requested); other tiers are ignored |
+| Launch pool | reward currency / LING, static LP fee 12500 (IMD policy tier), any tick spacing (60 requested); every other LING / reward pool with the hook pays the holder fee too, modules run only here |
 | Compiler | solc 0.8.26, Cancun, optimizer 200, `via_ir = false`, `bytecode_hash = "none"`, `cbor_metadata = false` |
 
 ## Sequence
@@ -50,8 +51,9 @@ gas for the token with its NFT contract (mainnet about 3.8M) and about 9.6M for 
 IMD's launch preflight caps a transaction at 16,777,216 gas, so this project cannot launch through IMD on
 Sepolia; it fits on mainnet. Test deployments on Sepolia work outside IMD with a high gas limit.
 
-Minting is linear in NFTs: about 11.9M gas for 1,000 NFTs in one transfer on mainnet. A transfer that would
-mint more than 1,000 switches the receiver to skipNFT instead of reverting (see README).
+Minting is linear in NFTs: about 12.1M gas for a buy minting 1,000 NFTs, 5.9M for moving 1,000 between
+holders, 3.4M for burning 1,000 (`test/GasCap.t.sol`). Fusaka's EIP-7825 caps a transaction at 16,777,216
+gas, so the auto-skip limit is 800 NFTs (about 9.7M), leaving room for routers, modules and one sink poke.
 
 ## Renderer
 
@@ -92,5 +94,5 @@ The Sepolia test pool is native ETH / LING at fee 12500, tick spacing 60, pool i
 `0xfcb32948f4fb35898800b453dea13820d3d3d84fa88ea2dbc30f8b5a23d45b22`. Checked there with real transactions:
 buys minting NFTs with renderer art, the exact 1.25% fee, the automatic hand-over inside a swap once 0.01 ETH
 had accrued and its queueing for the next UTC day, `keep` in one transaction followed by a sell that burned the
-others first, the creator-fee split and `claimDev`, and the 1,000-NFT auto skip. Mainnet addresses will be
+others first, the creator-fee split and `claimDev`, and the auto skip (then 1,000 NFTs, now 800). Mainnet addresses will be
 added after the IMD launch.

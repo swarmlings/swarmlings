@@ -12,7 +12,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
-import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
+import {BalanceDelta, BalanceDeltaLibrary, toBalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {
     BeforeSwapDelta,
     BeforeSwapDeltaLibrary,
@@ -62,6 +62,10 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     /// cap, and never applies to sells.
     uint256 public constant SNIPE_WINDOW = 60;
     uint256 public constant SNIPE_MAX_BPS = 4000;
+    /// @notice JIT guard: liquidity removed within this many blocks of being added forfeits a share of its fees
+    /// in the reward currency to NFT holders, falling linearly to zero over the window. Removal itself is never
+    /// blocked and principal is never touched.
+    uint256 public constant JIT_BLOCKS = 10;
     /// @notice The council, deployed with CREATE2 at the same address on every chain (see docs).
     address public constant COUNCIL = 0x4d0b3507D80f678d9e658Fd5482Ca6a96636A032;
 
@@ -89,6 +93,8 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     Module[] internal _modules;
     /// @notice Every address that was ever a sink; they keep access to the services for their earmarked claims.
     mapping(address => bool) public isSink;
+    /// @notice Block of the last liquidity addition per position (pool, owner, range, salt), for the JIT guard.
+    mapping(bytes32 => uint64) public lastAdded;
 
     /// @notice Holder fees ever collected, and holder fees ever handed to the token.
     /// totalFees == distributed + claims held by the hook.
@@ -133,6 +139,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     );
     event PositionFees(address indexed sink, uint256 toHolders, uint256 toSink);
     event Taken(address indexed sink, Currency indexed currency, address to, uint256 amount);
+    event JitPenalty(address indexed owner, uint256 amount);
 
     uint8 private constant OP_DISTRIBUTE = 1;
     uint8 private constant OP_BUY = 2;
@@ -284,13 +291,15 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         SwapParams calldata params,
         bytes calldata hookData
     ) external onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        if (!_isLaunch(key)) {
+        if (!_isCharged(key)) {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
         bool buy = _isBuy(params);
         _distributeDuringSwap();
         uint256 bps = _quote(sender, key, params, buy, hookData);
-        _runModules(Callbacks.BEFORE_SWAP, _relay(IHiveModule.onBeforeSwap.selector), buy);
+        if (_isLaunch(key)) {
+            _runModules(Callbacks.BEFORE_SWAP, _relay(IHiveModule.onBeforeSwap.selector), buy);
+        }
         if (_rewardSpecified(params)) {
             uint256 fee = _specifiedFee(params, bps);
             _collect(fee, bps, buy);
@@ -307,7 +316,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         BalanceDelta delta,
         bytes calldata hookData
     ) external onlyPoolManager returns (bytes4, int128) {
-        if (!_isLaunch(key)) return (IHooks.afterSwap.selector, 0);
+        if (!_isCharged(key)) return (IHooks.afterSwap.selector, 0);
         uint256 bps;
         assembly ("memory-safe") { bps := tload(3) }
         bps &= type(uint128).max;
@@ -327,10 +336,16 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
             _collect(fee, bps, buy);
             returned = fee.toInt128();
         }
-        assembly ("memory-safe") { tstore(4, fee) }
-        _runModules(Callbacks.AFTER_SWAP, _relay(IHiveModule.onAfterSwap.selector), buy);
-        assembly ("memory-safe") { tstore(4, 0) }
-        _pokeSinks();
+        if (_isLaunch(key)) {
+            assembly ("memory-safe") {
+                tstore(4, fee)
+            }
+            _runModules(Callbacks.AFTER_SWAP, _relay(IHiveModule.onAfterSwap.selector), buy);
+            assembly ("memory-safe") {
+                tstore(4, 0)
+            }
+            _pokeSinks();
+        }
         assembly ("memory-safe") { tstore(3, 0) }
         return (IHooks.afterSwap.selector, returned);
     }
@@ -360,6 +375,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         if (_isLaunch(key)) {
             _runModules(Callbacks.AFTER_ADD_LIQUIDITY, _relay(IHiveModule.onAfterAddLiquidity.selector), true);
         }
+        if (_isCharged(key)) lastAdded[_positionKey(key, sender, params)] = uint64(block.number);
         return (IHooks.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
     }
 
@@ -391,7 +407,38 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
                 Callbacks.AFTER_REMOVE_LIQUIDITY, _relay(IHiveModule.onAfterRemoveLiquidity.selector), false
             );
         }
-        return (IHooks.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
+        BalanceDelta penalty = BalanceDeltaLibrary.ZERO_DELTA;
+        if (_isCharged(key)) penalty = _jitPenalty(key, sender, params, feesAccrued);
+        return (IHooks.afterRemoveLiquidity.selector, penalty);
+    }
+
+    /// @dev Fees in the reward currency earned by a position removed within `JIT_BLOCKS` of its last addition
+    /// go to holders, pro rata to how early it leaves. Only fees: principal is untouched and nothing reverts.
+    function _jitPenalty(
+        PoolKey calldata key,
+        address owner,
+        ModifyLiquidityParams calldata params,
+        BalanceDelta feesAccrued
+    ) private returns (BalanceDelta) {
+        uint64 added = lastAdded[_positionKey(key, owner, params)];
+        if (added == 0 || block.number - added >= JIT_BLOCKS) return BalanceDeltaLibrary.ZERO_DELTA;
+        int128 fee = rewardIsCurrency0 ? feesAccrued.amount0() : feesAccrued.amount1();
+        if (fee <= 0) return BalanceDeltaLibrary.ZERO_DELTA;
+        uint256 amount = uint256(uint128(fee)) * (JIT_BLOCKS - (block.number - added)) / JIT_BLOCKS;
+        if (amount == 0) return BalanceDeltaLibrary.ZERO_DELTA;
+        totalFees += amount;
+        poolManager.mint(address(this), rewardId, amount);
+        emit JitPenalty(owner, amount);
+        int128 a = int128(uint128(amount));
+        return rewardIsCurrency0 ? toBalanceDelta(a, 0) : toBalanceDelta(0, a);
+    }
+
+    function _positionKey(PoolKey calldata key, address owner, ModifyLiquidityParams calldata params)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(key.toId(), owner, params.tickLower, params.tickUpper, params.salt));
     }
 
     function beforeDonate(
@@ -484,7 +531,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         if (gasleft() < MODULE_GAS + MODULE_GAS / 63 + 30_000) revert InsufficientGas();
     }
 
-    /// @dev After a swap, sinks that say they are due get to spend their claims. Never blocks the trade.
+    /// @dev After a swap, the first sink that says it is due gets to spend its claims. Never blocks the trade.
     function _pokeSinks() private {
         uint256 n = _slices.length;
         for (uint256 i; i < n; ++i) {
@@ -500,6 +547,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
             catch {
                 emit SinkFailed(s.sink);
             }
+            return; // at most one poke per swap keeps the gas a trade may need bounded
         }
     }
 
@@ -777,6 +825,15 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
 
     function _isLaunch(PoolKey calldata key) private view returns (bool) {
         return launchPoolSet && PoolId.unwrap(key.toId()) == PoolId.unwrap(launchPool);
+    }
+
+    /// @dev Every pool with this hook that pairs LING with the reward currency pays the holder fee, whatever its
+    /// tier, so a cheaper venue cannot be opened around the holders. Modules and sinks run on the launch pool.
+    function _isCharged(PoolKey calldata key) private view returns (bool) {
+        if (!launchPoolSet) return false;
+        return rewardIsCurrency0
+            ? key.currency0 == reward && Currency.unwrap(key.currency1) == ling
+            : Currency.unwrap(key.currency0) == ling && key.currency1 == reward;
     }
 
     /// @dev A buy pays the reward currency into the pool.
