@@ -23,6 +23,7 @@ contract Handler is Test {
     uint256 public devClaimed;
     uint256 public calls;
     uint256 public swapsOk;
+    uint256 public exactInBuys;
     uint256 public distributions;
 
     constructor(Swarmlings l, SwarmlingsHook h, PoolSwapTest r, PoolKey memory k, address[3] memory a) {
@@ -55,6 +56,7 @@ contract Handler is Test {
             } catch {}
         } else {
             uint256 amt = bound(eth, 1e12, 0.5 ether);
+            ++exactInBuys;
             try router.swap{value: amt}(
                 key, SwapParams(true, -int256(amt), TickMath.MIN_SQRT_PRICE + 1), PoolSwapTest.TestSettings(false, false), ""
             ) {
@@ -169,9 +171,10 @@ contract InvariantTest is SwarmlingsBase {
     /// @dev The run must have traded for real; and once every stream has run out, everything added for holders
     /// is either claimed or claimable (up to rounding dust).
     function afterInvariant() public {
-        if (handler.calls() > 20) assertGt(handler.swapsOk(), 0, "no swap ever succeeded");
-        skip(2 days);
-        (,, uint256 total, uint256 claimed, uint256 unpaid) = ling.stream(0);
+        // exact-out buys may legitimately fail once the price has run away; exact-in buys never should
+        if (handler.exactInBuys() > 0) assertGt(handler.swapsOk(), 0, "no swap ever succeeded");
+        vm.warp((block.timestamp / 1 days + 3) * 1 days); // every queued day has paid out
+        (,,, uint256 total, uint256 claimed, uint256 unpaid) = ling.stream(0);
         uint256 owed = _owedToEveryone();
         assertLe(claimed + owed, total);
         assertLe(total - claimed - owed - unpaid, 1e9, "nothing lost but dust: claimed, claimable or still waiting");
@@ -183,7 +186,7 @@ contract InvariantTest is SwarmlingsBase {
     }
 
     function invariant_claimsAreCounted() public view {
-        (,, uint256 total, uint256 claimed,) = ling.stream(0);
+        (,,, uint256 total, uint256 claimed,) = ling.stream(0);
         assertEq(claimed, handler.claimed(), "every claim is booked");
         assertEq(ling.devPaid(), handler.devClaimed());
         assertLe(claimed, total);
@@ -198,7 +201,7 @@ contract InvariantTest is SwarmlingsBase {
         for (uint256 i; i < 3; ++i) {
             address a = handler.actors(i);
             uint256 n = mirror.balanceOf(a);
-            assertEq(n, ling.balanceOf(a) / UNIT);
+            assertEq(n, ling.getSkipNFT(a) ? 0 : ling.balanceOf(a) / UNIT);
             total += n;
         }
         assertEq(ling.activeNFTs(), total, "only wallets hold NFTs");
@@ -217,10 +220,10 @@ contract InvariantTest is SwarmlingsBase {
         assertGt(handler.swapsOk(), 60);
         assertGt(handler.distributions() + (hook.distributed() > 0 ? 1 : 0), 0);
         assertGt(hook.distributed(), 0);
-        skip(2 days);
+        vm.warp((block.timestamp / 1 days + 3) * 1 days);
         handler.claim(1);
         handler.claim(2);
-        (,,, uint256 claimed,) = ling.stream(0);
+        (,,,, uint256 claimed,) = ling.stream(0);
         assertGt(claimed, 0);
         invariant_rewardsAreSolvent();
         invariant_claimsAreCounted();

@@ -10,7 +10,9 @@
 | Swap-fee reward | native ETH (address 0) unless `block.chainid == 1`, then IMD `0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7` |
 | Creator fee | 5% (ERC-2981) to the token: 50% streamed to holders in ETH, 50% to DEV, the dev and treasury wallet `0x92cEf4823119f3332A85A39023eEbA01a06890c4` (also the launch payer, so it collects the pool's 1% LP fee through the IMD launcher) |
 | Transfer validator | OpenSea `0xA000027A9B2802E1ddf7000061001e5c005A0000`, fixed |
-| Reward stream | every reward is paid out over 24 hours, per NFT per second |
+| Reward payout | what arrives on one UTC day is paid out over the next day, per NFT per second |
+| Keep | `keep(ids)` puts the named ids first in the caller's list (last to burn) |
+| Auto skip | a transfer that would mint more than 1,000 NFTs switches the receiver to skipNFT instead |
 | Renderer | `0x8d79e6677FA6E52190B39096f8496628811D8281` (CREATE2, see below) |
 | Hook constructor | `($poolManager, $token)` |
 | Hook flags | `0x10CC` (afterInitialize, beforeSwap, afterSwap, beforeSwapReturnDelta, afterSwapReturnDelta), mask `0x3FFF` |
@@ -39,8 +41,8 @@ gas for the token with its NFT contract (mainnet about 3.8M) and about 9.6M for 
 IMD's launch preflight caps a transaction at 16,777,216 gas, so this project cannot launch through IMD on
 Sepolia; it fits on mainnet. Test deployments on Sepolia work outside IMD with a high gas limit.
 
-Minting is linear in NFTs: about 11.9M gas for 1,000 NFTs in one transfer on mainnet, so a single buy can mint
-at most about 1,300 NFTs under the cap. Larger buyers split their buys or `setSkipNFT(true)` first.
+Minting is linear in NFTs: about 11.9M gas for 1,000 NFTs in one transfer on mainnet. A transfer that would
+mint more than 1,000 switches the receiver to skipNFT instead of reverting (see README).
 
 ## Renderer
 

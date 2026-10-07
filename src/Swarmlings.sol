@@ -24,10 +24,10 @@ interface IWETH {
 /// - half of the 5% creator fee on NFT sales, in ETH (the other half goes to DEV).
 /// @dev No owner powers, admin, proxy, pause, mint or fee on transfer: every transfer moves exactly the amount
 /// stated. `owner()` only tells marketplaces who edits the collection page; nothing in these contracts checks it.
-/// Rewards are streamed: each amount that arrives is folded, with whatever is still unpaid, into a new STREAM-long
-/// stream to whoever holds NFTs during that time, so holding for a moment (including flash loans) earns only that
-/// moment's share. With steady trading this pays out gradually (roughly two thirds within a day). Accrual runs
-/// and both sides are settled before every change of NFT ownership.
+/// Rewards are paid by day: everything that arrives during one EPOCH (a UTC day) is paid out the next day at a
+/// constant rate per second, to whoever holds NFTs during that time. Holding for a moment (including flash loans)
+/// earns only that moment's share, and every day's payout is known in advance. Accrual runs and both sides are
+/// settled before every change of NFT ownership.
 contract Swarmlings is DN404 {
     /// @notice LING per Swarmling. 1e27 / 300,000e18 = 3,333 NFTs at most; the last 100,000 LING never form one.
     uint256 public constant UNIT = 300_000e18;
@@ -44,8 +44,11 @@ contract Swarmlings is DN404 {
     /// nothing from swaps. It holds no LING allocation and has no power in these contracts.
     address public constant DEV = 0x92cEf4823119f3332A85A39023eEbA01a06890c4;
     uint256 public constant DEV_SHARE_BPS = 5000;
-    /// @notice Every reward is paid out evenly over this long.
-    uint256 public constant STREAM = 1 days;
+    /// @notice Rewards that arrive during one epoch are paid out evenly over the next one.
+    uint256 public constant EPOCH = 1 days;
+    /// @notice A transfer that would mint more NFTs than this at once switches the receiver to skipNFT instead,
+    /// so a large buy still fits in a transaction; the receiver can opt back in later with `setSkipNFT(false)`.
+    uint256 public constant MAX_MINT_PER_TRANSFER = 1_000;
 
     uint256 public constant ETH_POT = 0;
     uint256 public constant TOKEN_POT = 1;
@@ -56,9 +59,9 @@ contract Swarmlings is DN404 {
 
     struct Pot {
         uint256 accPerNFT; // earned by one NFT since launch, scaled by 1e36
-        uint256 rate; // scaled amount streamed per second
-        uint256 idle; // scaled amount waiting to be streamed (accrued while no NFT existed, or rounding)
-        uint64 finish; // when the current stream ends
+        uint256 rate; // scaled amount paid per second during `epoch`
+        uint256 queued; // scaled amount to pay out from the next epoch on (arrivals, rounding, unheld time)
+        uint64 epoch; // the epoch `rate` belongs to
         uint64 last; // accrued up to here
         uint256 accounted; // balance of this currency the ledger knows about (holders' and DEV's)
         uint256 total; // ever added for holders
@@ -73,8 +76,11 @@ contract Swarmlings is DN404 {
 
     error PayFailed();
     error Reentrancy();
+    error NotYours();
 
-    event RewardStreamed(uint256 indexed pot, uint256 amount, uint256 ratePerSecond, uint256 finish);
+    event RewardQueued(uint256 indexed pot, uint256 amount, uint256 payoutEpoch);
+    event Kept(address indexed holder, uint256[] ids);
+    event AutoSkipNFT(address indexed holder, uint256 nftsNotMinted);
     event CreatorFee(uint256 amount, uint256 toHolders, uint256 toDev);
     event Claimed(address indexed holder, uint256 eth, uint256 token);
     event DevPaid(uint256 amount);
@@ -128,6 +134,27 @@ contract Swarmlings is DN404 {
             } catch {}
         }
         return string.concat('data:application/json;utf8,{"name":"Swarmling #', _toString(id), '"}');
+    }
+
+    /// @notice Puts `ids` (yours) first in your list, in this order, so they are the last to burn when you sell.
+    /// Selling burns from the end of the list; one call protects any number of favourites.
+    function keep(uint256[] calldata ids) external {
+        DN404Storage storage $ = _getDN404Storage();
+        Uint32Map storage owned = $.owned[msg.sender];
+        Uint32Map storage oo = $.oo;
+        for (uint256 k; k < ids.length; ++k) {
+            uint256 id = ids[k];
+            if (_ownerAt(id) != msg.sender) revert NotYours();
+            uint256 i = _get(oo, _ownedIndex(id));
+            if (i < k) revert NotYours(); // listed twice
+            if (i == k) continue;
+            uint32 other = _get(owned, k);
+            _set(owned, k, uint32(id));
+            _set(owned, i, other);
+            _set(oo, _ownedIndex(id), uint32(k));
+            _set(oo, _ownedIndex(other), uint32(i));
+        }
+        emit Kept(msg.sender, ids);
     }
 
     // ------------------------------------------------------------------ money in
@@ -203,18 +230,17 @@ contract Swarmlings is DN404 {
         token = _owed[holder][TOKEN_POT] + n * (_accView(TOKEN_POT) - _settledAcc[holder][TOKEN_POT]) / SCALE;
     }
 
-    /// @notice A pot's stream: amount per second (in wei), when it ends, totals added and claimed, and what is
-    /// still to be paid out (the rest of the stream, plus anything that waits for an NFT to exist).
+    /// @notice A pot today: paid per second now (wei), when today ends, what is queued for tomorrow, totals
+    /// added and claimed, and everything not yet paid out (rest of today plus the queue).
     function stream(uint256 pot)
         external
         view
-        returns (uint256 perSecond, uint256 finish, uint256 total, uint256 claimed, uint256 unpaid)
+        returns (uint256 perSecond, uint256 dayEnds, uint256 tomorrow, uint256 total, uint256 claimed, uint256 unpaid)
     {
-        Pot storage p = _pot[pot];
-        uint256 t = block.timestamp < p.finish ? block.timestamp : p.finish;
-        uint256 scaled = p.idle + (p.finish > t ? (p.finish - t) * p.rate : 0);
-        if (t > p.last && _totalNFTSupply() == 0) scaled += (t - p.last) * p.rate;
-        return (p.rate / SCALE, p.finish, p.total, p.claimed, scaled / SCALE);
+        Pot memory p = _advance(_pot[pot], _totalNFTSupply());
+        dayEnds = (uint256(p.epoch) + 1) * EPOCH;
+        uint256 left = dayEnds > block.timestamp ? (dayEnds - block.timestamp) * p.rate : 0;
+        return (p.rate / SCALE, dayEnds, p.queued / SCALE, p.total, p.claimed, (left + p.queued) / SCALE);
     }
 
     /// @notice NFTs that exist now; each one earns the same share.
@@ -254,31 +280,50 @@ contract Swarmlings is DN404 {
         _stream(TOKEN_POT, fresh);
     }
 
-    /// @dev Folds what is left of the current stream, plus anything idle, into a new STREAM-long stream.
+    /// @dev New money waits for the next epoch: it is paid out evenly during it.
     function _stream(uint256 pot, uint256 amount) private {
         Pot storage p = _pot[pot];
         _accrue(p);
-        uint256 left = p.finish > block.timestamp ? (p.finish - block.timestamp) * p.rate : 0;
-        uint256 total = amount * SCALE + left + p.idle;
-        uint256 rate = total / STREAM;
-        p.rate = rate;
-        p.idle = total - rate * STREAM;
-        p.finish = uint64(block.timestamp + STREAM);
-        p.last = uint64(block.timestamp);
+        p.queued += amount * SCALE;
         p.total += amount;
-        emit RewardStreamed(pot, amount, rate / SCALE, block.timestamp + STREAM);
+        emit RewardQueued(pot, amount, uint256(p.epoch) + 1);
     }
 
-    /// @dev The NFT count is constant between two accruals, because every change of it accrues first.
     function _accrue(Pot storage p) private {
-        uint256 t = block.timestamp < p.finish ? block.timestamp : p.finish;
-        uint256 last = p.last;
-        if (t <= last) return;
-        uint256 amount = (t - last) * p.rate;
-        p.last = uint64(t);
-        uint256 nfts = _totalNFTSupply();
-        if (nfts == 0) p.idle += amount;
-        else p.accPerNFT += amount / nfts;
+        Pot memory q = _advance(p, _totalNFTSupply());
+        p.accPerNFT = q.accPerNFT;
+        p.rate = q.rate;
+        p.queued = q.queued;
+        p.epoch = q.epoch;
+        p.last = q.last;
+    }
+
+    /// @dev Pays `p` up to now for `nfts` NFTs, which is constant over that time because every change of the NFT
+    /// count accrues first. Time with no NFT sends its share back to the queue. At most three steps: the rest of
+    /// the current epoch, the next one (paying what was queued), then a jump to today.
+    function _advance(Pot memory p, uint256 nfts) private view returns (Pot memory) {
+        uint256 nowTs = block.timestamp;
+        while (true) {
+            uint256 end = (uint256(p.epoch) + 1) * EPOCH;
+            uint256 t = nowTs < end ? nowTs : end;
+            if (t > p.last) {
+                uint256 amount = (t - p.last) * p.rate;
+                if (nfts == 0) p.queued += amount;
+                else p.accPerNFT += amount / nfts;
+                p.last = uint64(t);
+            }
+            if (nowTs < end) return p;
+            uint256 today = nowTs / EPOCH;
+            p.epoch = uint64(nfts == 0 ? today : p.epoch + 1);
+            p.last = uint64(uint256(p.epoch) * EPOCH);
+            p.rate = p.queued / EPOCH;
+            p.queued -= p.rate * EPOCH;
+            if (p.rate == 0 && p.epoch < today) {
+                p.epoch = uint64(today);
+                p.last = uint64(today * EPOCH);
+            }
+        }
+        return p; // unreachable
     }
 
     function _accrueAll() private {
@@ -286,12 +331,8 @@ contract Swarmlings is DN404 {
         if (rewardCurrency != address(0)) _accrue(_pot[TOKEN_POT]);
     }
 
-    function _accView(uint256 pot) private view returns (uint256 acc) {
-        Pot storage p = _pot[pot];
-        acc = p.accPerNFT;
-        uint256 t = block.timestamp < p.finish ? block.timestamp : p.finish;
-        uint256 nfts = _totalNFTSupply();
-        if (t > p.last && nfts != 0) acc += (t - p.last) * p.rate / nfts;
+    function _accView(uint256 pot) private view returns (uint256) {
+        return _advance(_pot[pot], _totalNFTSupply()).accPerNFT;
     }
 
     // ------------------------------------------------------------------ settlement around NFT moves
@@ -313,6 +354,15 @@ contract Swarmlings is DN404 {
         _accrueAll();
         _settle(from);
         _settle(to);
+        if (!getSkipNFT(to)) {
+            uint256 after_ = from == to ? balanceOf(to) : balanceOf(to) + amount;
+            uint256 mint = after_ / UNIT;
+            uint256 have = _balanceOfNFT(to);
+            if (mint > have + MAX_MINT_PER_TRANSFER) {
+                _setSkipNFT(to, true);
+                emit AutoSkipNFT(to, mint - have);
+            }
+        }
         super._transfer(from, to, amount);
     }
 

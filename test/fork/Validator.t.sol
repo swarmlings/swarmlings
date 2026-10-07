@@ -69,7 +69,7 @@ contract ValidatorForkTest is Test {
         address imd = ling.IMD();
         deal(imd, address(ling), 100e18);
         ling.syncToken();
-        skip(1 days);
+        vm.warp((block.timestamp / 1 days + 2) * 1 days); // today's arrivals pay out tomorrow
         vm.prank(alice);
         (, uint256 t) = ling.claim();
         assertApproxEqAbs(t, 100e18, 1e6);

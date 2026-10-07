@@ -18,16 +18,20 @@
 ## Invariants (checked by `test/Invariant.t.sol`)
 
 - Hook: `totalFees == distributed + pendingFees` and the hook never holds the reward currency.
-- Token: every claim is booked; everyone's `pending` plus DEV's share never exceeds the balance; once all
-  streams have ended, everything added for holders is claimed or claimable up to rounding dust.
+- Token: every claim is booked; everyone's `pending` plus DEV's share never exceeds the balance; once every day has paid out, everything added for holders is claimed or claimable up to rounding dust.
 - Every wallet's NFT count equals `balance / UNIT`; only wallets hold NFTs; at most 3,333 exist.
 
 ## Design choices worth reviewing
 
-- **Streaming.** Rewards accrue per second to the NFTs that exist; accrual runs before every change of the NFT
-  count, so the count is constant between accruals. This removes any edge from holding at the moment of a
-  hand-over (an independent review showed a flash-borrowed position could otherwise take ~47% of a
-  distribution; `test_flashBorrowedNftsEarnNothing` now covers it).
+- **Day-by-day payout.** Rewards that arrive on one UTC day are paid the next day at a constant rate to the
+  NFTs that exist; accrual runs before every change of the NFT count, so the count is constant between
+  accruals. This removes any edge from holding at the moment of a hand-over (an independent review showed a
+  flash-borrowed position could otherwise take ~47% of a distribution; `test_flashBorrowedNftsEarnNothing`
+  covers it) and, unlike a rolling stream, pays each day's amount out completely.
+- **`keep(ids)`.** Swaps entries in DN404's owned list and the matching owned-index entries; owner aliases and
+  the mirror are untouched, so ownership never changes. Rejects ids the caller does not own and duplicates.
+- **Auto skip.** The 1,000-NFT guard runs before DN404's own transfer logic; it only flips the receiver's skip
+  flag, which DN404 already lets anyone set for themselves.
 - **Hand-over inside `beforeSwap`.** Pending claims are burned and the reward is `take`n straight to the token
   (the burn credits the hook exactly what `take` debits). It is skipped if the manager holds too little of the
   currency at that moment, or, for an ERC-20, if that currency is currently synced for settlement (taking it

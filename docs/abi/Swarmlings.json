@@ -40,6 +40,19 @@
   },
   {
     "type": "function",
+    "name": "EPOCH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "ETH_POT",
     "inputs": [],
     "outputs": [
@@ -79,6 +92,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_MINT_PER_TRANSFER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_NFTS",
     "inputs": [],
     "outputs": [
@@ -99,19 +125,6 @@
         "name": "",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "STREAM",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -333,6 +346,19 @@
   },
   {
     "type": "function",
+    "name": "keep",
+    "inputs": [
+      {
+        "name": "ids",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "mirrorERC721",
     "inputs": [],
     "outputs": [
@@ -472,7 +498,12 @@
         "internalType": "uint256"
       },
       {
-        "name": "finish",
+        "name": "dayEnds",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "tomorrow",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -614,6 +645,25 @@
   },
   {
     "type": "event",
+    "name": "AutoSkipNFT",
+    "inputs": [
+      {
+        "name": "holder",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "nftsNotMinted",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Claimed",
     "inputs": [
       {
@@ -677,7 +727,26 @@
   },
   {
     "type": "event",
-    "name": "RewardStreamed",
+    "name": "Kept",
+    "inputs": [
+      {
+        "name": "holder",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "ids",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RewardQueued",
     "inputs": [
       {
         "name": "pot",
@@ -692,13 +761,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "ratePerSecond",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "finish",
+        "name": "payoutEpoch",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -793,6 +856,11 @@
   {
     "type": "error",
     "name": "MirrorAddressIsZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotYours",
     "inputs": []
   },
   {

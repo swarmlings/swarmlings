@@ -57,6 +57,7 @@ abstract contract SwarmlingsBase is Test, Deployers {
     }
 
     function setUp() public virtual {
+        vm.warp(1_800_000_000);
         deployFreshManagerAndRouters();
         Pairing p = pairing();
         native = p == Pairing.Native;
@@ -178,6 +179,14 @@ abstract contract SwarmlingsBase is Test, Deployers {
     function _pend(address who) internal view returns (uint256) {
         (uint256 e, uint256 t) = ling.pending(who);
         return native ? e : t;
+    }
+
+    function _nextDay() internal {
+        vm.warp((block.timestamp / 1 days + 1) * 1 days);
+    }
+
+    function _paidOut() internal {
+        vm.warp((block.timestamp / 1 days + 2) * 1 days);
     }
 
     function _nfts(address who) internal view returns (uint256) {

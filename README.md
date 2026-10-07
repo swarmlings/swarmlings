@@ -34,9 +34,11 @@ Holders earn two things, equally per NFT and **per second held**:
 | Swap fees: 1.25% of every buy and sell | IMD on Ethereum mainnet (native ETH on testnets) | 100% to holders |
 | Creator fee: 5% of every NFT sale on marketplaces (ERC-2981) | ETH (WETH is unwrapped) | 50% holders, 50% `DEV` |
 
-- **Streamed.** Every amount that reaches the token is paid out evenly over 24 hours to whoever holds NFTs
-  during that time. Holding for a moment earns a moment's share, so flash loans and buying right before a
-  distribution earn nothing extra. With no NFT in existence, the stream waits and joins the next one.
+- **Paid by day.** Everything that reaches the token during one UTC day is paid out the next day at a
+  constant rate per second, to whoever holds NFTs during that time. Holding for a moment earns a moment's
+  share, so flash loans and buying right before a distribution earn nothing extra; and each day's payout is
+  known in advance (`stream(pot)` shows today's rate and what is queued for tomorrow). Time with no NFT in
+  existence sends its share back to the queue.
 - **Settled on every move.** Before any NFT changes owner (ERC-20 transfers, mints, burns, marketplace NFT
   transfers), both sides are settled. A seller keeps everything their NFTs earned; a buyer earns from then on.
 - **Claim:** `pending(holder)` returns `(eth, token)`; `claim()` pays both. `claimDev()` sends DEV its half of
@@ -64,8 +66,16 @@ Holders earn two things, equally per NFT and **per second held**:
 ### Which NFT burns, and how to keep one
 
 Selling burns from the end of the wallet's list, the most recently received first, and a burned id is minted
-again later to someone else. Sending an NFT to yourself moves it to the end of your list. To keep a favourite,
-send your other NFTs to yourself first: they move behind it and burn before it.
+again later to someone else. `keep(ids)` moves the ids you name to the front of your list in one transaction,
+so they are the last to burn; the site offers it as **Keep**. (Sending an NFT to yourself also moves it to the
+end of the list.)
+
+### Very large buys
+
+Minting is linear in NFTs, so a transfer that would mint more than 1,000 Swarmlings at once would not fit in a
+block. Instead of reverting, the token switches that receiver to skipNFT (`AutoSkipNFT` event): the LING
+arrives, no NFT is minted. Such a wallet stays in skip mode until its LING is split across wallets that each
+need at most 1,000; a wallet holding more than 300,000,000 LING is not meant to hold NFTs.
 
 ### The hook
 
@@ -91,13 +101,14 @@ forge test
 Solidity 0.8.26, Cancun, optimizer 200 runs, no IR, `bytecode_hash = "none"`. Dependencies are vendored
 under `lib/` (see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)); tests need no network or RPC.
 
-The suite (119 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
+The suite (132 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
 IMD as currency1): all four fee modes with exact amounts, partial fills, other pools and launch-pool
 hijacking, unit boundaries (299,999.99 vs 300,000 LING), contracts and EIP-7702 wallets skipping NFTs,
-marketplace NFT sales, burns and the keep-a-favourite trick, streaming by time held, a flash-loan attempt to
-snipe a distribution, rewards with no holders, creator fees split with DEV, both currencies on mainnet, a
-LING-only seeded pool, a 100-NFT whale buy, reentrancy on `claim`, the validator, the renderer fallback, and
-stateful invariants (hook ledger, solvency, booked claims, NFT counts, nothing lost once streams end).
+marketplace NFT sales, burns, `keep`, day-by-day payouts and quiet days, a flash-loan attempt to snipe a
+distribution, rewards with no holders, the 1,000-NFT auto-skip, creator fees split with DEV, both currencies
+on mainnet, a LING-only seeded pool, a 100-NFT whale buy, reentrancy on `claim` and `syncToken`, the
+validator, the renderer fallback, and stateful invariants (hook ledger, solvency, booked claims, NFT counts,
+nothing lost once every day has paid out).
 `test/fork/` repeats the validator and IMD checks against the real mainnet contracts when
 `MAINNET_RPC_URL` is set.
 

@@ -111,7 +111,7 @@ abstract contract HookSuite is SwarmlingsBase {
             else _sellExactOut(alice, bound(amount, 1e9, BIG / 4)); // the pool holds about 2 BIG
         }
         assertEq(hook.totalFees(), hook.distributed() + hook.pendingFees(), "ledger");
-        assertEq(_nfts(alice), ling.balanceOf(alice) / UNIT);
+        assertEq(_nfts(alice), ling.getSkipNFT(alice) ? 0 : ling.balanceOf(alice) / UNIT);
     }
 
     function test_partialFillRevertsWhenFeeWasTakenUpFront() public {
@@ -151,7 +151,7 @@ abstract contract HookSuite is SwarmlingsBase {
     // ------------------------------------------------------------------ NFTs through the pool
 
     function test_poolAndRoutersNeverHoldNfts() public {
-        _buyExactIn(alice, 5 * BIG);
+        _buyExactIn(alice, BIG / 2);
         _sellExactIn(alice, ling.balanceOf(alice) / 2);
         assertEq(_nfts(address(manager)), 0);
         assertEq(_nfts(address(hook)), 0);
@@ -185,8 +185,8 @@ abstract contract HookSuite is SwarmlingsBase {
         assertEq(hook.pendingFees(), 0);
         assertEq(hook.distributed(), fees);
         assertEq(_rbal(address(ling)), fees);
-        assertEq(_pend(alice), 0, "streamed, not dropped");
-        skip(1 days);
+        assertEq(_pend(alice), 0, "queued for tomorrow, not dropped");
+        _paidOut();
         uint256 nfts = ling.activeNFTs();
         assertApproxEqAbs(_pend(alice), fees * _nfts(alice) / nfts, 1e6);
         assertApproxEqAbs(_pend(bob), fees * _nfts(bob) / nfts, 1e6);
@@ -204,7 +204,7 @@ abstract contract HookSuite is SwarmlingsBase {
         sniper.attack(UNIT * 500);
         assertGt(hook.distributed(), 0, "the hand-over happened inside the attack");
         assertEq(_nfts(address(sniper)), 0);
-        skip(2 days);
+        _paidOut();
         assertEq(_pend(address(sniper)), 0, "nothing for zero seconds held");
         vm.prank(address(sniper));
         (uint256 e, uint256 t) = ling.claim();
@@ -233,6 +233,7 @@ abstract contract HookSuite is SwarmlingsBase {
         ling.transfer(launcher, carols); // carol leaves: only alice holds
         hook.distribute();
         uint256 f = hook.distributed();
+        _nextDay(); // payout day starts
         skip(12 hours);
         _give(bob, UNIT * 10); // bob holds the second half, alongside alice
         skip(13 hours);
@@ -246,13 +247,13 @@ abstract contract HookSuite is SwarmlingsBase {
         _buyExactIn(alice, 2 * BIG); // nobody holds an NFT
         hook.distribute();
         uint256 first = hook.distributed();
-        skip(2 days); // the whole stream passes with no NFT: kept idle
+        skip(3 days); // the payout day passes with no NFT: it goes back to the queue
         _buyExactOut(bob, UNIT);
         vm.prank(carol);
         ling.setSkipNFT(true);
         _buyExactIn(carol, BIG); // pending >= minimum again
         hook.distribute();
-        skip(1 days);
+        _paidOut();
         assertGt(_pend(bob), first, "the only NFT gets everything, including what waited");
     }
 
@@ -263,7 +264,7 @@ abstract contract HookSuite is SwarmlingsBase {
             _sellExactIn(bob, ling.balanceOf(bob));
         }
         if (hook.pendingFees() >= hook.minDistribute()) hook.distribute();
-        skip(1 days);
+        _paidOut();
         uint256 due = _pend(alice);
         assertGt(due, 0);
         uint256 before = _rbal(alice);

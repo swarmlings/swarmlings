@@ -67,7 +67,8 @@ contract SwarmlingsTest is Test {
         ling = new Swarmlings();
         mirror = SwarmlingsMirror(payable(ling.mirrorERC721()));
         UNIT = ling.UNIT();
-        DAY = ling.STREAM();
+        DAY = ling.EPOCH();
+        vm.warp(1_800_000_000); // a fixed, epoch-aligned start
         vm.deal(address(this), 1_000 ether);
     }
 
@@ -90,6 +91,16 @@ contract SwarmlingsTest is Test {
 
     function _eth(address who) internal view returns (uint256 e) {
         (e,) = ling.pending(who);
+    }
+
+    /// @dev Jump to the next day's start, when today's arrivals begin paying out.
+    function _nextDay() internal {
+        vm.warp((block.timestamp / DAY + 1) * DAY);
+    }
+
+    /// @dev Jump past the whole payout of whatever is queued now.
+    function _paidOut() internal {
+        vm.warp((block.timestamp / DAY + 2) * DAY);
     }
 
     // ------------------------------------------------------------------ supply and units
@@ -127,7 +138,8 @@ contract SwarmlingsTest is Test {
         assertEq(ling.balanceOf(alice), amount);
         assertEq(ling.balanceOf(launcher), 1e27 - amount);
         assertEq(ling.totalSupply(), 1e27);
-        assertEq(mirror.balanceOf(alice), amount / UNIT);
+        uint256 nfts = amount / UNIT;
+        assertEq(mirror.balanceOf(alice), nfts > ling.MAX_MINT_PER_TRANSFER() ? 0 : nfts, "huge amounts switch to skip");
     }
 
     function test_swarmShareMintsNoNftUntilTopUp() public {
@@ -163,11 +175,13 @@ contract SwarmlingsTest is Test {
         _give(bob, UNIT);
         _swapFees(4 ether);
         assertEq(_eth(alice), 0, "nothing at the moment it arrives");
+        _nextDay();
+        assertEq(_eth(alice), 0, "payout starts at the day boundary");
         skip(DAY / 2);
-        assertApproxEqAbs(_eth(alice), 1.5 ether, 1e6);
+        assertApproxEqAbs(_eth(alice), 1.5 ether, 1e6, "half the day, half the money");
         assertApproxEqAbs(_eth(bob), 0.5 ether, 1e6);
         skip(DAY);
-        assertApproxEqAbs(_eth(alice), 3 ether, 1e6, "all of it after the stream ends");
+        assertApproxEqAbs(_eth(alice), 3 ether, 1e6, "all of it after the day ends");
         assertApproxEqAbs(_eth(bob), 1 ether, 1e6);
         assertEq(_eth(launcher), 0, "skip holders earn nothing");
 
@@ -182,6 +196,7 @@ contract SwarmlingsTest is Test {
     function test_holdingForAMomentEarnsAMomentsShare() public {
         _give(alice, UNIT * 10);
         _swapFees(10 ether);
+        _nextDay();
         skip(DAY / 2);
         _give(bob, UNIT * 1000); // a whale arrives halfway, holds one second, leaves
         skip(1);
@@ -192,21 +207,39 @@ contract SwarmlingsTest is Test {
         assertApproxEqRel(_eth(alice), 10 ether, 0.001e18);
     }
 
-    function test_newRewardsFoldIntoTheStream() public {
+    function test_eachDayPaysWhatArrivedTheDayBefore() public {
+        _give(alice, UNIT);
+        _swapFees(1 ether); // day 0
+        _nextDay(); // day 1 pays 1 ETH
+        skip(DAY / 2);
+        _swapFees(3 ether); // arrives day 1, pays on day 2
+        (uint256 perSecond,, uint256 tomorrow,,, uint256 unpaid) = ling.stream(0);
+        assertApproxEqAbs(perSecond * DAY, 1 ether, DAY);
+        assertEq(tomorrow, 3 ether);
+        assertApproxEqAbs(unpaid, 3.5 ether, 1e6);
+        assertApproxEqAbs(_eth(alice), 0.5 ether, 1e6);
+        _nextDay();
+        assertApproxEqAbs(_eth(alice), 1 ether, 1e6, "day 1 paid in full, day 2 not started");
+        skip(DAY);
+        assertApproxEqAbs(_eth(alice), 4 ether, 1e6);
+    }
+
+    function test_quietDaysKeepTheQueueIntact() public {
         _give(alice, UNIT);
         _swapFees(1 ether);
-        skip(DAY / 2);
-        _swapFees(1 ether); // 0.5 left + 1 new, over a fresh day
-        skip(DAY);
+        skip(10 * DAY); // nobody touches the contract for a week and a half
+        assertApproxEqAbs(_eth(alice), 1 ether, 1e6);
+        _swapFees(1 ether);
+        _paidOut();
         assertApproxEqAbs(_eth(alice), 2 ether, 1e6);
     }
 
     function test_rewardWithNoNftsWaitsForTheFirstOne() public {
         _swapFees(1 ether);
-        skip(DAY * 2); // streamed into nobody: kept idle
+        skip(DAY * 3); // paid into nobody: goes back to the queue
         _give(alice, UNIT);
-        _swapFees(1 ether); // idle joins the new stream
-        skip(DAY);
+        _swapFees(1 ether);
+        _paidOut();
         assertApproxEqAbs(_eth(alice), 2 ether, 1e6);
     }
 
@@ -214,7 +247,7 @@ contract SwarmlingsTest is Test {
     function test_nftSaleKeepsEarningsWithSeller() public {
         _give(alice, UNIT * 2);
         _swapFees(2 ether);
-        skip(DAY);
+        _paidOut();
         uint256 id = ling.ownedIds(alice, 0, 1)[0];
         vm.prank(alice);
         mirror.transferFrom(alice, bob, id);
@@ -224,7 +257,7 @@ contract SwarmlingsTest is Test {
         assertEq(_eth(bob), 0, "buyer starts from zero");
 
         _swapFees(2 ether);
-        skip(DAY);
+        _paidOut();
         assertApproxEqAbs(_eth(alice), 3 ether, 1e6);
         assertApproxEqAbs(_eth(bob), 1 ether, 1e6);
     }
@@ -233,7 +266,7 @@ contract SwarmlingsTest is Test {
         _give(alice, UNIT * 2);
         uint256[] memory ids = ling.ownedIds(alice, 0, 2);
         _swapFees(2 ether);
-        skip(DAY);
+        _paidOut();
         vm.prank(alice);
         ling.transfer(launcher, 1); // e.g. a sell into the pool
         assertEq(mirror.balanceOf(alice), 1);
@@ -256,11 +289,69 @@ contract SwarmlingsTest is Test {
         assertEq(mirror.balanceOf(alice), 1);
     }
 
+    function test_keepPutsFavouritesFirst() public {
+        _give(alice, UNIT * 5);
+        uint256[] memory ids = ling.ownedIds(alice, 0, 5);
+        uint256[] memory fav = new uint256[](2);
+        fav[0] = ids[4]; // the newest, would burn first
+        fav[1] = ids[2];
+        vm.prank(alice);
+        ling.keep(fav);
+        uint256[] memory now_ = ling.ownedIds(alice, 0, 5);
+        assertEq(now_[0], ids[4]);
+        assertEq(now_[1], ids[2]);
+        vm.prank(alice);
+        ling.transfer(launcher, UNIT * 3); // sell three units
+        uint256[] memory left = ling.ownedIds(alice, 0, 2);
+        assertEq(left[0], ids[4]);
+        assertEq(left[1], ids[2]);
+        assertEq(mirror.ownerOf(ids[4]), alice);
+        assertEq(mirror.ownerOf(ids[2]), alice);
+        // the mirror still agrees on every owner
+        for (uint256 i; i < 5; ++i) assertEq(mirror.ownerAt(ids[i]), i == 2 || i == 4 ? alice : address(0));
+    }
+
+    function test_keepRejectsOthersAndDuplicates() public {
+        _give(alice, UNIT * 2);
+        _give(bob, UNIT);
+        uint256[] memory x = new uint256[](1);
+        x[0] = ling.ownedIds(bob, 0, 1)[0];
+        vm.prank(alice);
+        vm.expectRevert(Swarmlings.NotYours.selector);
+        ling.keep(x);
+        uint256[] memory d = new uint256[](2);
+        d[0] = ling.ownedIds(alice, 0, 1)[0];
+        d[1] = d[0];
+        vm.prank(alice);
+        vm.expectRevert(Swarmlings.NotYours.selector);
+        ling.keep(d);
+    }
+
+    function test_hugeBuySwitchesToSkipInsteadOfRunningOutOfGas() public {
+        _give(alice, UNIT * 1000); // exactly the limit: minted
+        assertEq(mirror.balanceOf(alice), 1000);
+        _give(bob, UNIT * 1001); // one over: skipped, no revert
+        assertEq(mirror.balanceOf(bob), 0);
+        assertTrue(ling.getSkipNFT(bob));
+        // opting back in does not help while the wallet still needs more than the limit in one go
+        vm.prank(bob);
+        ling.setSkipNFT(false);
+        _give(bob, UNIT);
+        assertEq(mirror.balanceOf(bob), 0);
+        assertTrue(ling.getSkipNFT(bob));
+        // the way out: split the LING across wallets, each below the limit
+        vm.startPrank(bob);
+        ling.transfer(carol, UNIT * 501);
+        ling.transfer(carol, UNIT * 501);
+        vm.stopPrank();
+        assertEq(mirror.balanceOf(carol), 1002);
+    }
+
     function test_claimCannotBeReentered() public {
         GreedyHolder g = new GreedyHolder(ling);
         _give(address(g), UNIT);
         _swapFees(1 ether);
-        skip(DAY);
+        _paidOut();
         vm.expectRevert(Swarmlings.PayFailed.selector);
         g.claim();
         assertApproxEqAbs(_eth(address(g)), 1 ether, 1e6, "a failed claim changes nothing");
@@ -282,7 +373,7 @@ contract SwarmlingsTest is Test {
         vm.prank(bob);
         ling.transfer(carol, moved);
         _swapFees(v2);
-        skip(2 * DAY);
+        _paidOut();
         uint256 owedTotal = _eth(alice) + _eth(bob) + _eth(carol);
         assertLe(owedTotal, v1 + v2);
         // with no NFT left after the move, the second reward waits idle for the next holder instead
@@ -296,7 +387,7 @@ contract SwarmlingsTest is Test {
         _give(alice, UNIT);
         _creatorFee(1 ether);
         assertEq(ling.devOwed(), 0.5 ether);
-        skip(DAY);
+        _paidOut();
         assertApproxEqAbs(_eth(alice), 0.5 ether, 1e6);
         uint256 before = ling.DEV().balance;
         vm.prank(bob); // anyone can trigger; the ETH only goes to DEV
@@ -317,8 +408,8 @@ contract SwarmlingsTest is Test {
         (bool ok,) = address(ling).call{value: 2 ether}("");
         assertTrue(ok);
         vm.prank(alice);
-        ling.claim(); // syncs first; nothing streamed yet
-        skip(DAY);
+        ling.claim(); // syncs first; nothing paid yet
+        _paidOut();
         assertApproxEqAbs(_eth(alice), 1 ether, 1e6);
         assertEq(ling.devOwed(), 1 ether);
     }
@@ -434,7 +525,7 @@ contract SwarmlingsMainnetTest is SwarmlingsTest {
         _imdFees(100e18);
         _creatorFee(1 ether);
         assertEq(ling.devOwed(), 0.5 ether, "dev gets half of the ETH only");
-        skip(DAY);
+        _paidOut();
         (uint256 e, uint256 t) = ling.pending(alice);
         assertApproxEqAbs(e, 0.25 ether, 1e6);
         assertApproxEqAbs(t, 50e18, 1e6);
@@ -453,10 +544,10 @@ contract SwarmlingsMainnetTest is SwarmlingsTest {
         _give(alice, UNIT);
         _imdFees(100e18);
         _swapFees(1 ether);
-        skip(DAY);
+        _paidOut();
         vm.expectRevert(Swarmlings.PayFailed.selector); // its callback hits the lock, so its own claim fails
         c.claim();
-        (, uint256 total,,) = _tokenStream();
+        (,,, uint256 total,,) = ling.stream(1);
         assertEq(total, 100e18, "nothing counted twice");
         vm.prank(alice);
         (, uint256 t) = ling.claim();
@@ -464,17 +555,12 @@ contract SwarmlingsMainnetTest is SwarmlingsTest {
         ling.syncToken();
     }
 
-    function _tokenStream() internal view returns (uint256, uint256, uint256, uint256) {
-        (uint256 r, uint256 f, uint256 total, uint256 claimed,) = ling.stream(1);
-        return (r, total, f, claimed);
-    }
-
     function test_unsolicitedImdGoesToHoldersToo() public {
         _give(alice, UNIT);
         imd.mint(address(ling), 10e18);
         vm.prank(alice);
         ling.claim(); // counts it
-        skip(DAY);
+        _paidOut();
         (, uint256 t) = ling.pending(alice);
         assertApproxEqAbs(t, 10e18, 1e6);
         assertEq(ling.devOwed(), 0);
