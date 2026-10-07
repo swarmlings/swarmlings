@@ -101,6 +101,10 @@ stateful invariants (hook ledger, solvency, booked claims, NFT counts, nothing l
 `test/fork/` repeats the validator and IMD checks against the real mainnet contracts when
 `MAINNET_RPC_URL` is set.
 
+## ABIs
+
+`docs/abi/<Contract>.json` holds the ABI of each contract (generated with `forge inspect <Contract> abi --json`).
+
 ## Launch
 
 [`launch.json`](launch.json) is the IMD `univ4_hook` manifest for Ethereum mainnet, paired with IMD. Deployment notes, the renderer's CREATE2
