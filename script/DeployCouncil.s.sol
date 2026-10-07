@@ -17,7 +17,7 @@ contract DeployCouncil is Script {
         bytes memory initCode = abi.encodePacked(type(SwarmlingsCouncil).creationCode, abi.encode(OWNER));
         address expected = vm.computeCreate2Address(SALT, keccak256(initCode), PROXY);
         require(
-            expected == 0xf49c77302dA1D9370d0F5Cb192c228748261621a, "constant: update SwarmlingsHook.COUNCIL"
+            expected == 0x4d0b3507D80f678d9e658Fd5482Ca6a96636A032, "constant: update SwarmlingsHook.COUNCIL"
         );
         require(expected.code.length == 0, "already deployed");
         vm.startBroadcast();

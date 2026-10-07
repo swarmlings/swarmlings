@@ -30,8 +30,8 @@ import {IHiveModule, IHiveSink, ISwarmlingsHook, ISwarmlingsToken, Callbacks} fr
 ///   the services below;
 /// - **modules** subscribe to the pool's callbacks: guards (may revert buys, liquidity additions and donations),
 ///   observers (gas-capped, can never block a trade) and fee quoters (price an extra fee that goes to holders).
-/// Only `council` can change slices and modules, and the council is a timelock. The holder floor, the hand-over
-/// path, the `MAX_FEE_BPS` cap and the rule that nothing can ever block a sell are constants.
+/// Only `council` can change slices and modules. The holder floor, the hand-over path, the `MAX_FEE_BPS` cap,
+/// the launch snipe tax and the rule that nothing can ever block a sell are constants.
 /// @dev All 14 hook flags are set so later modules can use any callback. Fees are minted as ERC-6909 claims
 /// during the swap; the holders' part waits at the hook until `minDistribute` has accrued and is then handed to
 /// the token, which pays it out day by day. Sinks spend their claims only through the hook, which acts as the
@@ -57,8 +57,13 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     uint256 public constant MODULE_GAS = 200_000;
     /// @notice Gas given to a sink's `poke` after a swap, when the sink says it is due.
     uint256 public constant POKE_GAS = 1_000_000;
-    /// @notice The governance timelock, deployed with CREATE2 at the same address on every chain (see docs).
-    address public constant COUNCIL = 0xf49c77302dA1D9370d0F5Cb192c228748261621a;
+    /// @notice Snipe tax: for `SNIPE_WINDOW` seconds after the launch pool opens, buys pay an extra fee that
+    /// starts at `SNIPE_MAX_BPS` and falls linearly to zero. It goes to NFT holders, sits outside the council's
+    /// cap, and never applies to sells.
+    uint256 public constant SNIPE_WINDOW = 60;
+    uint256 public constant SNIPE_MAX_BPS = 4000;
+    /// @notice The council, deployed with CREATE2 at the same address on every chain (see docs).
+    address public constant COUNCIL = 0x4d0b3507D80f678d9e658Fd5482Ca6a96636A032;
 
     IPoolManager public immutable poolManager;
     /// @notice The Swarmlings token.
@@ -74,6 +79,8 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     bool public launchPoolSet;
     /// @notice Whether the reward currency is currency0 of the launch pool (always true for native ETH).
     bool public rewardIsCurrency0;
+    /// @notice When the launch pool was initialized; the snipe window counts from here.
+    uint64 public launchedAt;
     PoolKey internal _launchKey;
 
     /// @notice Who may change slices and modules. address(0) freezes the configuration forever.
@@ -222,6 +229,14 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         bps &= type(uint128).max;
     }
 
+    /// @notice The extra bps a buy pays right now because of the snipe tax; zero after `SNIPE_WINDOW`.
+    function snipeBps() public view returns (uint256) {
+        if (!launchPoolSet) return 0;
+        uint256 t = block.timestamp - launchedAt;
+        if (t >= SNIPE_WINDOW) return 0;
+        return SNIPE_MAX_BPS * (SNIPE_WINDOW - t) / SNIPE_WINDOW;
+    }
+
     /// @notice Holder fees collected and not yet handed to the token.
     function pendingFees() public view returns (uint256) {
         return poolManager.balanceOf(address(this), rewardId);
@@ -251,6 +266,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
                 launchPool = key.toId();
                 launchPoolSet = true;
                 rewardIsCurrency0 = r0;
+                launchedAt = uint64(block.timestamp);
                 _launchKey = key;
                 emit LaunchPool(launchPool, r0);
             }
@@ -429,6 +445,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
             }
         }
         if (bps > MAX_FEE_BPS) bps = MAX_FEE_BPS;
+        if (buy) bps += snipeBps();
         uint256 packed = bps | (buy ? uint256(1) << 255 : 0);
         assembly ("memory-safe") { tstore(3, packed) }
     }
@@ -736,7 +753,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         emit ModulesSet(m);
     }
 
-    /// @notice Removes one module. The council may do this without delay; it only ever takes behaviour away.
+    /// @notice Removes one module.
     function disableModule(address module) external onlyCouncil {
         uint256 n = _modules.length;
         for (uint256 i; i < n; ++i) {

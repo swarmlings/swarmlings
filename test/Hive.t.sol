@@ -71,12 +71,10 @@ abstract contract HiveBase is SwarmlingsBase {
         council = SwarmlingsCouncil(hook.COUNCIL());
     }
 
-    /// @dev Proposes `data` on the hook, waits out the delay and executes it.
+    /// @dev The council applies `data` to the hook at once.
     function _govern(bytes memory data) internal {
         vm.prank(dev);
-        bytes32 id = council.propose(address(hook), data, "test");
-        skip(council.DELAY());
-        council.execute(id, data);
+        council.execute(address(hook), data, "test");
     }
 
     function _slice(address sink, uint16 bps, bool poke)
@@ -138,51 +136,31 @@ abstract contract HiveSuite is HiveBase {
         hook.setCouncil(alice);
     }
 
-    function test_timelock() public {
+    function test_councilExecutesAtOnce() public {
         TreasurySink t = new TreasurySink(hook, dev, 1);
         bytes memory data = abi.encodeCall(ISwarmlingsHook.setSlices, (_slice(address(t), 100, false)));
         vm.expectRevert(SwarmlingsCouncil.OnlyOwner.selector);
-        council.propose(address(hook), data, "no");
+        council.execute(address(hook), data, "no");
         vm.prank(dev);
-        bytes32 id = council.propose(address(hook), data, "treasury 1%");
-        vm.expectRevert(SwarmlingsCouncil.TooEarly.selector);
-        council.execute(id, data);
-        skip(council.DELAY() - 1);
-        vm.expectRevert(SwarmlingsCouncil.TooEarly.selector);
-        council.execute(id, data);
-        skip(1);
-        vm.expectRevert(SwarmlingsCouncil.Mismatch.selector);
-        council.execute(id, abi.encodeCall(ISwarmlingsHook.setSlices, (_slice(address(t), 300, false))));
-        council.execute(id, data);
+        vm.expectEmit(true, false, false, true);
+        emit SwarmlingsCouncil.Executed(address(hook), data, "treasury 1%");
+        council.execute(address(hook), data, "treasury 1%");
         assertEq(hook.feeBps(), 225);
-        vm.expectRevert(SwarmlingsCouncil.UnknownProposal.selector);
-        council.execute(id, data);
-
+        // a failing call bubbles its reason
         vm.prank(dev);
-        bytes32 id2 = council.propose(address(hook), data, "again");
-        skip(council.DELAY() + council.GRACE() + 1);
-        vm.expectRevert(SwarmlingsCouncil.Lapsed.selector);
-        council.execute(id2, data);
-
-        vm.prank(dev);
-        bytes32 id3 = council.propose(address(hook), data, "cancelled");
-        vm.prank(dev);
-        council.cancel(id3);
-        skip(council.DELAY());
-        vm.expectRevert(SwarmlingsCouncil.UnknownProposal.selector);
-        council.execute(id3, data);
+        vm.expectRevert(SwarmlingsHook.Unknown.selector);
+        council.execute(address(hook), abi.encodeCall(ISwarmlingsHook.disableModule, (alice)), "x");
     }
 
-    function test_ownerChangesOnlyThroughTheTimelock() public {
-        vm.prank(dev);
-        vm.expectRevert(SwarmlingsCouncil.OnlySelf.selector);
+    function test_ownerCanHandTheCouncilOn() public {
+        vm.expectRevert(SwarmlingsCouncil.OnlyOwner.selector);
         council.setOwner(alice);
-        bytes memory data = abi.encodeCall(SwarmlingsCouncil.setOwner, (alice));
         vm.prank(dev);
-        bytes32 id = council.propose(address(council), data, "hand over");
-        skip(council.DELAY());
-        council.execute(id, data);
+        council.setOwner(alice);
         assertEq(council.owner(), alice);
+        vm.prank(dev);
+        vm.expectRevert(SwarmlingsCouncil.OnlyOwner.selector);
+        council.post("not any more");
     }
 
     function test_frozenCouncil() public {
@@ -191,10 +169,8 @@ abstract contract HiveSuite is HiveBase {
         TreasurySink t = new TreasurySink(hook, dev, 1);
         bytes memory data = abi.encodeCall(ISwarmlingsHook.setSlices, (_slice(address(t), 100, false)));
         vm.prank(dev);
-        bytes32 id = council.propose(address(hook), data, "too late");
-        skip(council.DELAY());
         vm.expectRevert(SwarmlingsHook.OnlyCouncil.selector);
-        council.execute(id, data);
+        council.execute(address(hook), data, "too late");
     }
 
     function test_sliceValidation() public {
@@ -242,14 +218,13 @@ abstract contract HiveSuite is HiveBase {
         assertEq(hook.modules().length, 1);
         _buyExactIn(alice, BIG / 10);
         assertEq(m.calls(), 1);
-        vm.prank(dev);
-        council.disableModule(address(hook), address(m)); // no delay
+        _govern(abi.encodeCall(ISwarmlingsHook.disableModule, (address(m))));
         assertEq(hook.modules().length, 0);
         _buyExactIn(alice, BIG / 10);
         assertEq(m.calls(), 1);
         vm.prank(dev);
         vm.expectRevert(SwarmlingsHook.Unknown.selector);
-        council.disableModule(address(hook), address(m));
+        council.execute(address(hook), abi.encodeCall(ISwarmlingsHook.disableModule, (address(m))), "again");
     }
 
     // ------------------------------------------------------------------ fee split
@@ -389,8 +364,9 @@ abstract contract HiveSuite is HiveBase {
     }
 
     function test_maxBuyGuard() public {
-        MaxBuy g = new MaxBuy(hook, UNIT, 1 hours, block.timestamp + council.DELAY());
+        MaxBuy g = new MaxBuy(hook, UNIT, 1 hours, block.timestamp + 1 hours);
         assertEq(g.cap(), UNIT, "flat until it starts");
+        skip(1 hours);
         _govern(abi.encodeCall(ISwarmlingsHook.setModules, (_module(address(g), Callbacks.AFTER_SWAP, true))));
         assertEq(g.cap(), UNIT);
         vm.expectRevert();
@@ -546,6 +522,54 @@ abstract contract HiveSuite is HiveBase {
         h = hook.totalFees();
         _buyExactIn(alice, BIG / 10);
         assertEq(hook.totalFees() - h, BIG / 10 * 125 / 10000, "buys pay no extra");
+    }
+
+    // ------------------------------------------------------------------ snipe tax
+
+    function test_snipeTaxDecaysOverTheFirstMinute() public {
+        assertEq(hook.snipeBps(), 0, "the base harness trades after the window");
+        vm.warp(hook.launchedAt());
+        assertEq(hook.snipeBps(), 4000);
+        uint256 before = _rbal(alice);
+        _buyExactIn(alice, BIG);
+        assertEq(before - _rbal(alice), BIG);
+        assertEq(hook.totalFees(), BIG * 4125 / 10000, "40% snipe tax + 1.25%, all to holders");
+        vm.warp(hook.launchedAt() + 30);
+        assertEq(hook.snipeBps(), 2000);
+        uint256 f = hook.totalFees();
+        _buyExactIn(alice, BIG);
+        assertEq(hook.totalFees() - f, BIG * 2125 / 10000);
+        f = hook.totalFees();
+        _buyExactOut(bob, UNIT);
+        uint256 paid = before; // silence
+        paid;
+        assertGt(hook.totalFees() - f, 0);
+        vm.warp(hook.launchedAt() + 59);
+        assertEq(hook.snipeBps(), uint256(4000) / 60);
+        vm.warp(hook.launchedAt() + 60);
+        assertEq(hook.snipeBps(), 0);
+        f = hook.totalFees();
+        _buyExactIn(alice, BIG);
+        assertEq(hook.totalFees() - f, BIG * 125 / 10000, "back to normal after a minute");
+        assertEq(hook.totalFees(), hook.distributed() + hook.pendingFees(), "ledger");
+    }
+
+    function test_snipeTaxNeverHitsSells() public {
+        vm.warp(hook.launchedAt() + 6);
+        _give(alice, UNIT * 2);
+        uint256 before = _rbal(alice);
+        _sellExactIn(alice, UNIT);
+        uint256 got = _rbal(alice) - before;
+        assertEq(hook.totalFees(), (got + hook.totalFees()) * 125 / 10000, "a sell in the window pays 1.25%");
+    }
+
+    function test_snipeTaxSitsOutsideTheCouncilCap() public {
+        FlexModule q = new FlexModule();
+        q.setExtra(10_000);
+        _govern(abi.encodeCall(ISwarmlingsHook.setModules, (_module(address(q), Callbacks.QUOTE, false))));
+        vm.warp(hook.launchedAt());
+        _buyExactIn(alice, BIG);
+        assertEq(hook.totalFees(), BIG * (500 + 4000) / 10000, "5% cap plus the 40% snipe tax");
     }
 
     function test_journal() public {

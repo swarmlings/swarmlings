@@ -3,10 +3,11 @@
 ## Trust assumptions
 
 - **Council.** `SwarmlingsCouncil` (owner: the dev wallet) is the only address that can change the hook's slices,
-  modules and council, through a two-day timelock with a public memo. Its powers are bounded in code: extra
-  fees of at most 3.75% to sinks, guards on buys, liquidity additions and donations only, quoted sell
-  surcharges within the 5% total that go to holders. It cannot touch the token, the holders' 1.25%, pending
-  rewards, the hand-over, sells or liquidity removal. `disableModule` needs no delay. See docs/HIVE.md.
+  modules and council. Changes apply at once and are logged with a memo; there is no delay, so holders trust
+  the dev wallet within the limits the code sets: extra fees of at most 3.75% to sinks, guards on buys,
+  liquidity additions and donations only, quoted sell surcharges within the 5% total that go to holders. It
+  cannot touch the token, the holders' 1.25%, pending rewards, the hand-over, sells or liquidity removal, and
+  it cannot change the snipe tax. The owner can hand the council to a timelock or a vote later. See docs/HIVE.md.
 - **Modules.** Each attached module is external code chosen by the council. A guard that reverts stops buys; an
   observer or quoter that reverts is skipped and logged. Sinks can spend only their own claims and only through
   the hook's services; liquidity they add is owned by the hook with no removal path.
@@ -32,6 +33,11 @@
 - Every wallet's NFT count equals `balance / UNIT`; only wallets hold NFTs; at most 3,333 exist.
 
 ## Design choices worth reviewing
+
+- **Snipe tax.** `snipeBps()` is a pure function of time since `launchedAt`: 40% at the launch block, linear to
+  0 at 60 seconds, buys only, added after the council cap so the cap stays a bound on governance, not on
+  launch protection. It is charged by the same code paths as every other fee, so `PartialFill` and the split
+  apply unchanged; everything it collects is holder revenue.
 
 - **Hook-owned actions.** Sinks never call the PoolManager for swaps or liquidity; the hook does, as
   `msg.sender`, and v4 skips a hook's own callbacks for its own actions, so a buyback pays no fee and runs no

@@ -85,6 +85,7 @@ abstract contract SwarmlingsBase is Test, Deployers {
             : PoolKey(Currency.wrap(address(ling)), reward, FEE, SPACING, IHooks(hookAddr));
         manager.initialize(launchKey, TickMath.getSqrtPriceAtTick(startTick));
         _seedLiquidity();
+        skip(hook.SNIPE_WINDOW()); // most tests trade after the launch snipe window
 
         address[3] memory traders = [alice, bob, carol];
         for (uint256 i; i < 3; ++i) {

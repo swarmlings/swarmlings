@@ -15,10 +15,10 @@ The token you hold, its address and the holders' share never change; what a trad
    │  • modules: guards, observers, quoters       │
    │  • config changes only from `council`        │
    └──────────────────────────────────────────────┘
-          ▲ timelocked calls                 ▲ claims minted per swap
+          ▲ owner's calls, at once           ▲ claims minted per swap
    ┌──────────────┐                 ┌─────────────────────────────────────┐
    │ Council      │                 │ sinks: TreasurySink, BuybackBurn,   │
-   │ 2-day delay  │                 │        AutoLiquidity, …             │
+   │ memo + log   │                 │        AutoLiquidity, …             │
    │ journal      │                 │ modules: TwapOracle, MaxBuy,        │
    └──────────────┘                 │          VolatilityFee, …           │
                                     └─────────────────────────────────────┘
@@ -35,7 +35,8 @@ The token you hold, its address and the holders' share never change; what a trad
 | Sinks spend their share only through the hook's four services; nothing else touches claims | `onlySink`, `_dispatch` |
 | Liquidity added by a sink belongs to the hook and has no removal path, ever | `addLiquidity`, no negative delta anywhere |
 | Position fees in the reward currency go to holders, LING fees back to the sink | `_settleSide` |
-| Configuration changes come only from `council`; the council's own changes wait `DELAY` | `onlyCouncil`, `SwarmlingsCouncil` |
+| Configuration changes come only from `council` | `onlyCouncil`, `SwarmlingsCouncil` |
+| Snipe tax: buys in the first 60 s pay up to 40% extra, falling to zero, to holders; sells never | `snipeBps()`, `SNIPE_WINDOW`, `SNIPE_MAX_BPS` |
 | The council can be handed on or set to `address(0)`, which freezes everything | `setCouncil` |
 
 ## Fee flow
@@ -43,7 +44,8 @@ The token you hold, its address and the holders' share never change; what a trad
 For each swap in the launch pool the hook computes a total `bps`:
 
 ```
-bps = 125 (holders) + Σ slice.bps (+ Σ quoter extras), capped at 500
+bps = min(125 (holders) + Σ slice.bps + Σ quoter extras, 500)  + snipeBps() on buys
+snipeBps() = 4000 × (60 − seconds since the pool opened) / 60, zero after 60 s
 ```
 
 The fee is charged on the reward-currency side in all four swap modes exactly as before (buys pay `bps` of what
@@ -93,18 +95,17 @@ modules.
   (200,000).
 - A **quoter** implements `quoteFee(...)` as a `view` returning extra bps. Fail open.
 
-Then the council proposes `setSlices` or `setModules` with a memo, waits two days, and anyone executes it.
+Then the council's owner calls `execute(hook, setSlices or setModules, memo)` and it applies at once.
 
 ## Governance
 
-`SwarmlingsCouncil` is a plain timelock: `propose(target, data, memo)` by its owner, `execute(id, data)` by
-anyone after `DELAY` (2 days) and before `GRACE` (14 days) runs out, `cancel` by the owner. Two calls skip the
-delay because they only take behaviour away or add information: `disableModule` and `post` (a journal entry).
-Changing the owner is itself a proposal. The owner is the dev wallet at first; it can later be a holder vote,
-a multisig, or nothing.
+`SwarmlingsCouncil` is deliberately simple: its owner calls `execute(target, data, memo)` and the change is
+live in that block, logged with the memo; `post(memo)` writes a journal entry; `setOwner` hands it on. The
+owner is the dev wallet at first; it can later be a timelock, a holder vote, a multisig, or nothing
+(`hook.setCouncil(address(0))` freezes the configuration forever).
 
 The council lives at the same CREATE2 address on every chain, `SwarmlingsHook.COUNCIL`
-(`0xf49c77302dA1D9370d0F5Cb192c228748261621a`, salt `keccak256("swarmlings.council.v1")`, owner
+(`0x4d0b3507D80f678d9e658Fd5482Ca6a96636A032`, salt `keccak256("swarmlings.council.v1")`, owner
 `0x92cEf4823119f3332A85A39023eEbA01a06890c4`), so the hook can name it before it exists;
 `script/DeployCouncil.s.sol` deploys it.
 
@@ -112,6 +113,14 @@ The council lives at the same CREATE2 address on every chain, `SwarmlingsHook.CO
 
 Compared with a fully frozen hook, holders now trust the council with three things, all bounded: up to 3.75% of
 extra fee may be routed to sinks of its choosing (including a treasury); buys, liquidity additions and donations
-may be guarded; and sells may be surcharged up to the 5% total by a quoter. Every one of these changes is
-announced on chain two days before it takes effect. The council can never touch the token, the holders'
-1.25%, their pending rewards, the hand-over path, or anyone's ability to sell or remove liquidity.
+may be guarded; and sells may be surcharged up to the 5% total by a quoter. These changes take effect at once,
+each logged with a memo. The council can never touch the token, the holders' 1.25%, their pending rewards, the
+hand-over path, the snipe tax, or anyone's ability to sell or remove liquidity.
+
+## Launch snipe tax
+
+Bots that buy in the launch block pay the most. For 60 seconds after the pool opens, every buy pays an extra
+fee of `4000 × (60 − t) / 60` bps on top of the normal fee: 40% at `t = 0`, 32% one block later, 16% at 36 s,
+nothing from 60 s on. It is charged exactly like the other fees (so a buy's `PartialFill` check includes it)
+and every wei goes to the holders' pot, which the first real holders receive the next day. Sells in the window
+pay the normal 1.25%. The tax is a constant; the council cannot change it.

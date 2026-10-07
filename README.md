@@ -7,7 +7,8 @@ sell pays 1.25% to the people who hold Swarmlings, and NFT sales pay a 5% creato
 The token, the NFTs and the holders' share are fixed: no proxy, pause, mint or upgrade anywhere. The hook is
 **the Hive**: an immutable router with every v4 callback enabled, to which financial primitives (buyback and
 burn, protocol-owned liquidity, oracles, anti-snipe guards, dynamic sell fees, project funding) can be attached
-after launch through a two-day timelock, within hard limits. See [docs/HIVE.md](docs/HIVE.md).
+after launch by the council, at once, within hard limits. The first 60 seconds of trading carry a snipe tax on
+buys that falls from 40% to zero, paid to holders. See [docs/HIVE.md](docs/HIVE.md).
 
 ## Contracts
 
@@ -16,7 +17,7 @@ after launch through a two-day timelock, within hard limits. See [docs/HIVE.md](
 | [`Swarmlings`](src/Swarmlings.sol) | DN404 token + `DN404Mirror` NFT. 1,000,000,000 LING, 18 decimals, minted once to the deployer. 300,000 LING = 1 NFT, at most 3,333. Holds and pays out NFT rewards. |
 | [`SwarmlingsMirror`](src/SwarmlingsMirror.sol) | The ERC-721 side (DN404 mirror): 5% creator fee (ERC-2981) to the token and OpenSea creator-fee enforcement (ERC721-C). |
 | [`SwarmlingsHook`](src/SwarmlingsHook.sol) | The Hive: Uniswap v4 hook with all 14 flags. Takes 1.25% of every swap in the launch pool, in the paired currency, for NFT holders, and runs the attached slices and modules. |
-| [`SwarmlingsCouncil`](src/SwarmlingsCouncil.sol) | Two-day timelock that alone can change the Hive's slices and modules; also an onchain journal. Same CREATE2 address on every chain. |
+| [`SwarmlingsCouncil`](src/SwarmlingsCouncil.sol) | The one address that can change the Hive's slices and modules (owner: the dev wallet, changes apply at once, every change logged with a memo); also an onchain journal. Same CREATE2 address on every chain. |
 | [`modules/`](src/modules/) | The primitives: `TreasurySink`, `BuybackBurn`, `AutoLiquidity`, `TwapOracle`, `MaxBuy`, `VolatilityFee`. None active at launch. |
 | [`SwarmlingsRenderer`](renderer/) | The art, deployed separately at the same CREATE2 address on every chain. Immutable; derives 7 traits from a fixed seed per id. |
 
@@ -98,8 +99,11 @@ need at most 1,000; a wallet holding more than 300,000,000 LING is not meant to 
   `addLiquidity`, `collectFees`, `take`). **Modules** subscribe to callbacks: guards may revert buys, liquidity
   additions and donations; observers and quoters run gas-capped and can never block a trade. No module can
   ever revert a sell or a liquidity removal.
-- **Council:** only `SwarmlingsCouncil` (a timelock, `DELAY` 2 days) can set slices and modules or hand
-  governance on; disabling a module needs no delay. At launch there are no slices and no modules.
+- **Snipe tax:** for the first 60 seconds after the launch pool opens, buys pay an extra fee that starts at
+  40% and falls linearly to zero (`snipeBps()`), on top of everything else and outside the council's cap. It
+  goes to holders. Sells never pay it.
+- **Council:** only `SwarmlingsCouncil` can set slices and modules or hand governance on; its owner (the dev
+  wallet) applies changes at once, each with a logged memo. At launch there are no slices and no modules.
 
 The total cost of a swap at launch is 2.5%: 1.25% to NFT holders (this hook) and the pool's own 1.25% LP fee
 (1% to the launch payer, 0.25% to IMD).
@@ -121,9 +125,9 @@ marketplace NFT sales, burns, `keep`, day-by-day payouts and quiet days, a flash
 distribution, rewards with no holders, the 1,000-NFT auto-skip, creator fees split with DEV, both currencies
 on mainnet, a LING-only seeded pool, a 100-NFT whale buy, reentrancy on `claim` and `syncToken`, the
 validator, the renderer fallback, and stateful invariants (hook ledger, solvency, booked claims, NFT counts,
-nothing lost once every day has paid out). `test/Hive.t.sol` covers the council's timelock, slice and module
+nothing lost once every day has paid out). `test/Hive.t.sol` covers the council, slice and module
 validation, the fee split in all four modes, guards that revert buys but never sells, observers that fail
-without blocking, the fee cap, every shipped primitive, and the hook-owned liquidity position.
+without blocking, the fee cap, every shipped primitive, and the hook-owned liquidity position, and the snipe tax (decay, sells exempt, outside the cap).
 `test/fork/` repeats the validator and IMD checks against the real mainnet contracts when
 `MAINNET_RPC_URL` is set.
 

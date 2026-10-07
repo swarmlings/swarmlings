@@ -17,7 +17,8 @@
 | Hook constructor | `($poolManager, $token)` |
 | Hook flags | all 14 (`0x3FFF`), so later modules can use any callback |
 | Hook fee | `HOLDER_FEE_BPS = 125`: buys pay 1.25% of what they spend, sells 1.25% of what the pool pays out; slices and quoters may raise the total to `MAX_FEE_BPS = 500` at most |
-| Council | `SwarmlingsHook.COUNCIL = 0xf49c77302dA1D9370d0F5Cb192c228748261621a` (CREATE2, salt `keccak256("swarmlings.council.v1")`, owner DEV), `DELAY` 2 days, `GRACE` 14 days |
+| Council | `SwarmlingsHook.COUNCIL = 0x4d0b3507D80f678d9e658Fd5482Ca6a96636A032` (CREATE2, salt `keccak256("swarmlings.council.v1")`, owner DEV); changes apply at once |
+| Snipe tax | buys in the first 60 s after the pool opens: extra `SNIPE_MAX_BPS = 4000` falling linearly to 0 (`snipeBps()`), to holders; sells exempt |
 | Modules at launch | none; see docs/HIVE.md for the shipped primitives and how they are attached |
 | Hand-over minimum | 0.01 ETH, or 5 IMD |
 | Launch pool | reward currency / LING, static LP fee 12500 (IMD policy tier), any tick spacing (60 requested); other tiers are ignored |
@@ -38,8 +39,8 @@
 5. Deploy the council (once per chain, any time): `forge script script/DeployCouncil.s.sol --rpc-url $RPC_URL
    --private-key $TREASURY_PRIVATE_KEY --broadcast`. Until it has code, nothing can change the hook.
 6. To attach a primitive: deploy it (its constructor takes the hook), then from the dev wallet
-   `council.propose(hook, abi.encodeCall(setSlices or setModules, …), memo)`; after two days anyone calls
-   `council.execute(id, data)`. `council.post(memo)` writes a journal entry.
+   `council.execute(hook, abi.encodeCall(setSlices or setModules, …), memo)`; it applies at once.
+   `council.post(memo)` writes a journal entry.
 
 ## Gas on Sepolia
 
