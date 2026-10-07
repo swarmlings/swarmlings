@@ -103,7 +103,7 @@ stateful invariants (hook ledger, solvency, booked claims, NFT counts, nothing l
 
 ## Launch
 
-[`launch.json`](launch.json) is the IMD `univ4_hook` manifest. Deployment notes, the renderer's CREATE2
+[`launch.json`](launch.json) is the IMD `univ4_hook` manifest for Ethereum mainnet, paired with IMD. Deployment notes, the renderer's CREATE2
 deployment and the trust assumptions are in [docs/OPERATIONS.md](docs/OPERATIONS.md) and
 [docs/SECURITY.md](docs/SECURITY.md).
 
