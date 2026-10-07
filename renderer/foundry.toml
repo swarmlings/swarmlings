@@ -1,0 +1,16 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib", "../lib"]
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+bytecode_hash = "none"
+allow_paths = [".."]
+remappings = ["solady/=lib/solady/src/", "forge-std/=../lib/forge-std/src/"]
+fs_permissions = [{ access = "read", path = "./test/data" }, { access = "write", path = "./test/out" }]
+gas_limit = "18446744073709551615"
