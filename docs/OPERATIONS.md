@@ -73,12 +73,13 @@ There is no keeper and nothing to administer.
 | --- | --- | --- |
 | Ethereum mainnet | SwarmlingsRenderer (CREATE2) | `0x8d79e6677FA6E52190B39096f8496628811D8281` (tx `0x20f1d64795f947d618b3c56d1f82d668e38430ba9093501e3f0e225f38c6a96b`) |
 | Sepolia | SwarmlingsRenderer (CREATE2) | `0x8d79e6677FA6E52190B39096f8496628811D8281` |
-| Sepolia (test, outside IMD) | Swarmlings | `0xDA9C00E194210b535cE22492D6819Bba29a2697e` |
-| Sepolia (test, outside IMD) | SwarmlingsMirror | `0x1b9e762c5612DA3D5df22bE0Ef3a3d4b279eC40c` |
-| Sepolia (test, outside IMD) | SwarmlingsHook | `0x1D73Cd1aCe16f005A4F18337586E7018717410CC` |
+| Sepolia (test, outside IMD) | Swarmlings | `0xA8f8a18e5E85639C46790B31d4f0ac2144Bf1dfC` |
+| Sepolia (test, outside IMD) | SwarmlingsMirror | `0x5EAee7e97d7c22C704814B884A738bfE18DF4cfd` |
+| Sepolia (test, outside IMD) | SwarmlingsHook | `0x3c0932BE7ad02A2E74C6fb16040B684F1d7910Cc` |
 
 The Sepolia test pool is native ETH / LING at fee 12500, tick spacing 60, pool id
-`0x43fcca381d7dbae2ed957df41b35066dfc68643596651c566975bd5b83ed8e87`. Checked there with real transactions:
+`0xfcb32948f4fb35898800b453dea13820d3d3d84fa88ea2dbc30f8b5a23d45b22`. Checked there with real transactions:
 buys minting NFTs with renderer art, the exact 1.25% fee, the automatic hand-over inside a swap once 0.01 ETH
-had accrued, the 24-hour stream, claims, the creator-fee split and `claimDev`, and the keep-a-favourite burn
-order. Mainnet addresses will be added after the IMD launch.
+had accrued and its queueing for the next UTC day, `keep` in one transaction followed by a sell that burned the
+others first, the creator-fee split and `claimDev`, and the 1,000-NFT auto skip. Mainnet addresses will be
+added after the IMD launch.
