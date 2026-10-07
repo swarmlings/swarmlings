@@ -71,6 +71,7 @@ There is no keeper and nothing to administer.
 
 | Chain | Contract | Address |
 | --- | --- | --- |
+| Ethereum mainnet | SwarmlingsRenderer (CREATE2) | `0x8d79e6677FA6E52190B39096f8496628811D8281` (tx `0x20f1d64795f947d618b3c56d1f82d668e38430ba9093501e3f0e225f38c6a96b`) |
 | Sepolia | SwarmlingsRenderer (CREATE2) | `0x8d79e6677FA6E52190B39096f8496628811D8281` |
 | Sepolia (test, outside IMD) | Swarmlings | `0xDA9C00E194210b535cE22492D6819Bba29a2697e` |
 | Sepolia (test, outside IMD) | SwarmlingsMirror | `0x1b9e762c5612DA3D5df22bE0Ef3a3d4b279eC40c` |
