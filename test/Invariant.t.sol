@@ -50,7 +50,10 @@ contract Handler is Test {
         if (exactOut) {
             uint256 out = bound(eth, 1e18, 30_000_000e18);
             try router.swap{value: 5 ether}(
-                key, SwapParams(true, int256(out), TickMath.MIN_SQRT_PRICE + 1), PoolSwapTest.TestSettings(false, false), ""
+                key,
+                SwapParams(true, int256(out), TickMath.MIN_SQRT_PRICE + 1),
+                PoolSwapTest.TestSettings(false, false),
+                ""
             ) {
                 ++swapsOk;
             } catch {}
@@ -58,7 +61,10 @@ contract Handler is Test {
             uint256 amt = bound(eth, 1e12, 0.5 ether);
             ++exactInBuys;
             try router.swap{value: amt}(
-                key, SwapParams(true, -int256(amt), TickMath.MIN_SQRT_PRICE + 1), PoolSwapTest.TestSettings(false, false), ""
+                key,
+                SwapParams(true, -int256(amt), TickMath.MIN_SQRT_PRICE + 1),
+                PoolSwapTest.TestSettings(false, false),
+                ""
             ) {
                 ++swapsOk;
             } catch {}
@@ -74,14 +80,20 @@ contract Handler is Test {
         if (exactOut) {
             uint256 out = bound(frac, 1e12, 0.05 ether);
             try router.swap(
-                key, SwapParams(false, int256(out), TickMath.MAX_SQRT_PRICE - 1), PoolSwapTest.TestSettings(false, false), ""
+                key,
+                SwapParams(false, int256(out), TickMath.MAX_SQRT_PRICE - 1),
+                PoolSwapTest.TestSettings(false, false),
+                ""
             ) {
                 ++swapsOk;
             } catch {}
         } else {
             uint256 amt = bound(frac, 1, bal);
             try router.swap(
-                key, SwapParams(false, -int256(amt), TickMath.MAX_SQRT_PRICE - 1), PoolSwapTest.TestSettings(false, false), ""
+                key,
+                SwapParams(false, -int256(amt), TickMath.MAX_SQRT_PRICE - 1),
+                PoolSwapTest.TestSettings(false, false),
+                ""
             ) {
                 ++swapsOk;
             } catch {}
@@ -157,7 +169,9 @@ contract InvariantTest is SwarmlingsBase {
     function setUp() public override {
         super.setUp();
         handler = new Handler(ling, hook, swapRouter, launchKey, [alice, bob, carol]);
-        for (uint256 i; i < 3; ++i) vm.deal([alice, bob, carol][i], 1e9 ether);
+        for (uint256 i; i < 3; ++i) {
+            vm.deal([alice, bob, carol][i], 1e9 ether);
+        }
         targetContract(address(handler));
     }
 
@@ -177,7 +191,9 @@ contract InvariantTest is SwarmlingsBase {
         (,,, uint256 total, uint256 claimed, uint256 unpaid) = ling.stream(0);
         uint256 owed = _owedToEveryone();
         assertLe(claimed + owed, total);
-        assertLe(total - claimed - owed - unpaid, 1e9, "nothing lost but dust: claimed, claimable or still waiting");
+        assertLe(
+            total - claimed - owed - unpaid, 1e9, "nothing lost but dust: claimed, claimable or still waiting"
+        );
     }
 
     function invariant_hookLedger() public view {

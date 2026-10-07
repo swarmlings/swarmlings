@@ -15,8 +15,10 @@
 | Auto skip | a transfer that would mint more than 1,000 NFTs switches the receiver to skipNFT instead |
 | Renderer | `0x8d79e6677FA6E52190B39096f8496628811D8281` (CREATE2, see below) |
 | Hook constructor | `($poolManager, $token)` |
-| Hook flags | `0x10CC` (afterInitialize, beforeSwap, afterSwap, beforeSwapReturnDelta, afterSwapReturnDelta), mask `0x3FFF` |
-| Hook fee | `FEE_BPS = 125`: buys pay 1.25% of what they spend, sells 1.25% of what the pool pays out |
+| Hook flags | all 14 (`0x3FFF`), so later modules can use any callback |
+| Hook fee | `HOLDER_FEE_BPS = 125`: buys pay 1.25% of what they spend, sells 1.25% of what the pool pays out; slices and quoters may raise the total to `MAX_FEE_BPS = 500` at most |
+| Council | `SwarmlingsHook.COUNCIL = 0xf49c77302dA1D9370d0F5Cb192c228748261621a` (CREATE2, salt `keccak256("swarmlings.council.v1")`, owner DEV), `DELAY` 2 days, `GRACE` 14 days |
+| Modules at launch | none; see docs/HIVE.md for the shipped primitives and how they are attached |
 | Hand-over minimum | 0.01 ETH, or 5 IMD |
 | Launch pool | reward currency / LING, static LP fee 12500 (IMD policy tier), any tick spacing (60 requested); other tiers are ignored |
 | Compiler | solc 0.8.26, Cancun, optimizer 200, `via_ir = false`, `bytecode_hash = "none"`, `cbor_metadata = false` |
@@ -25,14 +27,19 @@
 
 1. Deploy the renderer (once per chain, before or after the launch; see below).
 2. In the launcher's atomic transaction: deploy `Swarmlings` (zero arguments), mine and deploy
-   `SwarmlingsHook(poolManager, token)` at an address whose low 14 bits are `0x10CC`, then initialize the
-   reward-currency / LING pool with the hook at fee 12500. The hook binds to the first such pool it sees and
-   ignores every other tier.
+   `SwarmlingsHook(poolManager, token)` at an address whose low 14 bits are all set (`0x3FFF`), then initialize
+   the reward-currency / LING pool with the hook at fee 12500. The hook binds to the first such pool it sees
+   and ignores every other tier.
 3. Seed liquidity. A LING-only seed works: fees are minted as claims, and the hand-over waits until the
    manager holds enough of the reward currency.
 4. Requested economics: `poolBps: 9000` (pool 90%, swarm 10%, nothing to the requester). With the default
    remainder the requester's EOA would receive 100,000,000 LING and mint 333 NFTs inside the launch
    transaction.
+5. Deploy the council (once per chain, any time): `forge script script/DeployCouncil.s.sol --rpc-url $RPC_URL
+   --private-key $TREASURY_PRIVATE_KEY --broadcast`. Until it has code, nothing can change the hook.
+6. To attach a primitive: deploy it (its constructor takes the hook), then from the dev wallet
+   `council.propose(hook, abi.encodeCall(setSlices or setModules, …), memo)`; after two days anyone calls
+   `council.execute(id, data)`. `council.post(memo)` writes a journal entry.
 
 ## Gas on Sepolia
 
@@ -57,7 +64,8 @@ The token only staticcalls `tokenURI(id)` on it; until it has code, `tokenURI` r
 
 ## Running it
 
-There is no keeper and nothing to administer.
+There is no keeper. Sinks that are due are poked inside swaps; anyone may also call a sink's `poke()` or
+`collect()`.
 
 - Trades hand pending fees to holders on their own once the minimum is reached.
 - Anyone may call `SwarmlingsHook.distribute()` (reverts below the minimum) and `Swarmlings.syncReward()`.

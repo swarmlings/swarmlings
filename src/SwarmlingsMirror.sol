@@ -16,7 +16,10 @@ interface ICreatorToken {
     event TransferValidatorUpdated(address oldValidator, address newValidator);
 
     function getTransferValidator() external view returns (address validator);
-    function getTransferValidationFunction() external view returns (bytes4 functionSignature, bool isViewFunction);
+    function getTransferValidationFunction()
+        external
+        view
+        returns (bytes4 functionSignature, bool isViewFunction);
     function setTransferValidator(address validator) external;
 }
 
@@ -58,7 +61,11 @@ contract SwarmlingsMirror is DN404Mirror, ICreatorToken {
     }
 
     /// @notice ERC-2981: 5% of every sale, to the Swarmlings token (half to holders, half to the dev).
-    function royaltyInfo(uint256, uint256 salePrice) external view returns (address receiver, uint256 amount) {
+    function royaltyInfo(uint256, uint256 salePrice)
+        external
+        view
+        returns (address receiver, uint256 amount)
+    {
         return (baseERC20(), salePrice * ROYALTY_BPS / 10000);
     }
 

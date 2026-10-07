@@ -30,10 +30,7 @@ abstract contract SwarmlingsBase is Test, Deployers {
 
     uint24 internal constant FEE = 12500;
     int24 internal constant SPACING = 60;
-    uint160 internal constant HOOK_FLAGS = uint160(
-        Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-            | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-    );
+    uint160 internal constant HOOK_FLAGS = Hooks.ALL_HOOK_MASK;
     address internal constant IMD = 0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7;
 
     address internal launcher = makeAddr("launcher");
@@ -63,7 +60,11 @@ abstract contract SwarmlingsBase is Test, Deployers {
         native = p == Pairing.Native;
         if (!native) {
             vm.chainId(1); // the token picks IMD on mainnet
-            deployCodeTo("lib/v4-core/lib/solmate/src/test/utils/mocks/MockERC20.sol:MockERC20", abi.encode("Identity.md", "IMD", uint8(18)), IMD);
+            deployCodeTo(
+                "lib/v4-core/lib/solmate/src/test/utils/mocks/MockERC20.sol:MockERC20",
+                abi.encode("Identity.md", "IMD", uint8(18)),
+                IMD
+            );
         }
         _deployLing(p);
         mirror = DN404Mirror(payable(ling.mirrorERC721()));
@@ -142,12 +143,19 @@ abstract contract SwarmlingsBase is Test, Deployers {
 
     // ------------------------------------------------------------------ swaps, in reward units
 
-    function _swap(address who, bool buy, int256 amountSpecified, uint256 value) internal returns (BalanceDelta d) {
+    function _swap(address who, bool buy, int256 amountSpecified, uint256 value)
+        internal
+        returns (BalanceDelta d)
+    {
         bool zeroForOne = buy == rewardFirst;
         vm.prank(who);
         d = swapRouter.swap{value: native ? value : 0}(
             launchKey,
-            SwapParams(zeroForOne, amountSpecified, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1),
+            SwapParams(
+                zeroForOne,
+                amountSpecified,
+                zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            ),
             PoolSwapTest.TestSettings(false, false),
             ""
         );

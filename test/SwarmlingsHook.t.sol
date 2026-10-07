@@ -23,14 +23,15 @@ abstract contract HookSuite is SwarmlingsBase {
     // ------------------------------------------------------------------ wiring
 
     function test_permissionsAndLaunchPool() public view {
-        assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x10CC);
+        assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x3FFF);
         assertEq(address(hook.poolManager()), address(manager));
         assertEq(hook.ling(), address(ling));
         assertTrue(hook.reward() == reward);
         assertTrue(hook.launchPoolSet());
         assertEq(PoolId.unwrap(hook.launchPool()), PoolId.unwrap(launchKey.toId()));
         assertEq(hook.rewardIsCurrency0(), rewardFirst);
-        assertEq(hook.FEE_BPS(), 125);
+        assertEq(hook.HOLDER_FEE_BPS(), 125);
+        assertEq(hook.feeBps(), 125);
         assertEq(hook.LAUNCH_LP_FEE(), FEE);
         assertEq(hook.minDistribute(), native ? 0.01 ether : 5e18);
     }
@@ -40,7 +41,9 @@ abstract contract HookSuite is SwarmlingsBase {
         other.fee = 3000;
         other.tickSpacing = 60;
         manager.initialize(other, TickMath.getSqrtPriceAtTick(startTick));
-        assertEq(PoolId.unwrap(hook.launchPool()), PoolId.unwrap(launchKey.toId()), "launch pool never changes");
+        assertEq(
+            PoolId.unwrap(hook.launchPool()), PoolId.unwrap(launchKey.toId()), "launch pool never changes"
+        );
     }
 
     function test_callbacksOnlyFromManager() public {
@@ -120,7 +123,10 @@ abstract contract HookSuite is SwarmlingsBase {
         vm.prank(alice);
         vm.expectRevert(); // PartialFill, wrapped by the manager
         swapRouter.swap{value: native ? 50 * BIG : 0}(
-            launchKey, SwapParams(zeroForOne, -int256(50 * BIG), limit), PoolSwapTest.TestSettings(false, false), ""
+            launchKey,
+            SwapParams(zeroForOne, -int256(50 * BIG), limit),
+            PoolSwapTest.TestSettings(false, false),
+            ""
         );
     }
 
@@ -140,7 +146,9 @@ abstract contract HookSuite is SwarmlingsBase {
         swapRouter.swap{value: native ? BIG / 100 : 0}(
             other,
             SwapParams(
-                zeroForOne, -int256(BIG / 100), zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+                zeroForOne,
+                -int256(BIG / 100),
+                zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             ),
             PoolSwapTest.TestSettings(false, false),
             ""
@@ -325,7 +333,13 @@ contract FlashSniper is IUnlockCallback {
         Currency R = Currency.wrap(ling.rewardCurrency());
         pm.take(L, address(this), amt);
         BalanceDelta d = pm.swap(
-            key, SwapParams(rewardFirst, -int256(1e6), rewardFirst ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1), ""
+            key,
+            SwapParams(
+                rewardFirst,
+                -int256(1e6),
+                rewardFirst ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            ),
+            ""
         );
         int128 lingDelta = rewardFirst ? d.amount1() : d.amount0();
         int128 rewDelta = rewardFirst ? d.amount0() : d.amount1();
@@ -368,7 +382,13 @@ contract SyncBuyer is IUnlockCallback {
         Currency R = Currency.wrap(ling.rewardCurrency());
         pm.sync(R);
         BalanceDelta d = pm.swap(
-            key, SwapParams(rewardFirst, int256(lingOut), rewardFirst ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1), ""
+            key,
+            SwapParams(
+                rewardFirst,
+                int256(lingOut),
+                rewardFirst ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            ),
+            ""
         );
         int128 rewDelta = rewardFirst ? d.amount0() : d.amount1();
         MockERC20(Currency.unwrap(R)).transfer(address(pm), uint256(-int256(rewDelta)));

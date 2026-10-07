@@ -115,7 +115,11 @@ contract SwarmlingsTest is Test {
         assertEq(UNIT, 300_000e18);
         assertEq(ling.INITIAL_SUPPLY() / UNIT, ling.MAX_NFTS());
         assertEq(mirror.totalSupply(), 0);
-        assertEq(ling.rewardCurrency(), block.chainid == 1 ? ling.IMD() : address(0), "IMD on mainnet, ETH elsewhere");
+        assertEq(
+            ling.rewardCurrency(),
+            block.chainid == 1 ? ling.IMD() : address(0),
+            "IMD on mainnet, ETH elsewhere"
+        );
         assertEq(mirror.owner(), ling.DEV(), "marketplaces see the dev as collection editor");
     }
 
@@ -139,7 +143,11 @@ contract SwarmlingsTest is Test {
         assertEq(ling.balanceOf(launcher), 1e27 - amount);
         assertEq(ling.totalSupply(), 1e27);
         uint256 nfts = amount / UNIT;
-        assertEq(mirror.balanceOf(alice), nfts > ling.MAX_MINT_PER_TRANSFER() ? 0 : nfts, "huge amounts switch to skip");
+        assertEq(
+            mirror.balanceOf(alice),
+            nfts > ling.MAX_MINT_PER_TRANSFER() ? 0 : nfts,
+            "huge amounts switch to skip"
+        );
     }
 
     function test_swarmShareMintsNoNftUntilTopUp() public {
@@ -308,7 +316,9 @@ contract SwarmlingsTest is Test {
         assertEq(mirror.ownerOf(ids[4]), alice);
         assertEq(mirror.ownerOf(ids[2]), alice);
         // the mirror still agrees on every owner
-        for (uint256 i; i < 5; ++i) assertEq(mirror.ownerAt(ids[i]), i == 2 || i == 4 ? alice : address(0));
+        for (uint256 i; i < 5; ++i) {
+            assertEq(mirror.ownerAt(ids[i]), i == 2 || i == 4 ? alice : address(0));
+        }
     }
 
     function test_keepRejectsOthersAndDuplicates() public {
@@ -357,9 +367,14 @@ contract SwarmlingsTest is Test {
         assertApproxEqAbs(_eth(address(g)), 1 ether, 1e6, "a failed claim changes nothing");
     }
 
-    function testFuzz_rewardsNeverExceedWhatArrived(uint256 a, uint256 b, uint256 v1, uint256 v2, uint256 moved, uint256 dt)
-        public
-    {
+    function testFuzz_rewardsNeverExceedWhatArrived(
+        uint256 a,
+        uint256 b,
+        uint256 v1,
+        uint256 v2,
+        uint256 moved,
+        uint256 dt
+    ) public {
         a = bound(a, 0, 50);
         b = bound(b, 1, 50);
         v1 = bound(v1, 1, 100 ether);

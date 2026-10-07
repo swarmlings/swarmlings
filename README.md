@@ -4,7 +4,10 @@
 Hold 300,000 LING and a Swarmling appears in your wallet; sell below that and it is gone. Every buy and
 sell pays 1.25% to the people who hold Swarmlings, and NFT sales pay a 5% creator fee, half of it to them too.
 
-There is no owner, admin, proxy, pause or upgrade anywhere. Nothing can be changed after deployment.
+The token, the NFTs and the holders' share are fixed: no proxy, pause, mint or upgrade anywhere. The hook is
+**the Hive**: an immutable router with every v4 callback enabled, to which financial primitives (buyback and
+burn, protocol-owned liquidity, oracles, anti-snipe guards, dynamic sell fees, project funding) can be attached
+after launch through a two-day timelock, within hard limits. See [docs/HIVE.md](docs/HIVE.md).
 
 ## Contracts
 
@@ -12,16 +15,19 @@ There is no owner, admin, proxy, pause or upgrade anywhere. Nothing can be chang
 | --- | --- |
 | [`Swarmlings`](src/Swarmlings.sol) | DN404 token + `DN404Mirror` NFT. 1,000,000,000 LING, 18 decimals, minted once to the deployer. 300,000 LING = 1 NFT, at most 3,333. Holds and pays out NFT rewards. |
 | [`SwarmlingsMirror`](src/SwarmlingsMirror.sol) | The ERC-721 side (DN404 mirror): 5% creator fee (ERC-2981) to the token and OpenSea creator-fee enforcement (ERC721-C). |
-| [`SwarmlingsHook`](src/SwarmlingsHook.sol) | Uniswap v4 hook (flags `0x10CC`). Takes 1.25% of every swap in the launch pool, in the paired currency, and gives all of it to NFT holders. |
+| [`SwarmlingsHook`](src/SwarmlingsHook.sol) | The Hive: Uniswap v4 hook with all 14 flags. Takes 1.25% of every swap in the launch pool, in the paired currency, for NFT holders, and runs the attached slices and modules. |
+| [`SwarmlingsCouncil`](src/SwarmlingsCouncil.sol) | Two-day timelock that alone can change the Hive's slices and modules; also an onchain journal. Same CREATE2 address on every chain. |
+| [`modules/`](src/modules/) | The primitives: `TreasurySink`, `BuybackBurn`, `AutoLiquidity`, `TwapOracle`, `MaxBuy`, `VolatilityFee`. None active at launch. |
 | [`SwarmlingsRenderer`](renderer/) | The art, deployed separately at the same CREATE2 address on every chain. Immutable; derives 7 traits from a fixed seed per id. |
 
 ### The token
 
 - **NFTs follow the balance.** A wallet holding `n × 300,000` LING owns `n` Swarmlings. Buying across a unit
   mints, selling below one burns. Transfers between NFT holders move NFTs directly.
-- **Contracts skip NFTs** (DN404 default), so the factory, the PoolManager, routers and distributors never hold
-  any. Any contract, or an EIP-7702 delegated wallet, can opt in with `setSkipNFT(false)`.
-- **Plain transfers.** No fee or burn on transfer; every transfer moves exactly the amount stated.
+- **Contracts skip NFTs** (DN404 default), so the factory, the PoolManager, routers, sinks and distributors
+  never hold any. Any contract, or an EIP-7702 delegated wallet, can opt in with `setSkipNFT(false)`.
+- **Plain transfers.** No fee or burn on transfer; every transfer moves exactly the amount stated. Anyone may
+  `burn` their own LING (the buyback primitive does).
 - **Art:** `tokenURI(id)` returns exactly what the renderer returns. If the renderer has no code or reverts,
   it returns a minimal valid JSON instead of reverting. The renderer can never touch balances or rewards.
 
@@ -82,13 +88,20 @@ need at most 1,000; a wallet holding more than 300,000,000 LING is not meant to 
 - Constructor: the chain's PoolManager and the token. The first pool that pairs LING with the token's reward
   currency at the launch tier (static 1.25% LP fee) becomes `launchPool`; pools at other tiers or with a
   dynamic fee trade fee-free and cannot take its place.
-- **Fee:** `FEE_BPS = 125`, always in the reward currency, in all four swap modes: buys pay 1.25% of
+- **Fee:** `HOLDER_FEE_BPS = 125`, always in the reward currency, in all four swap modes: buys pay 1.25% of
   everything they spend, sells pay 1.25% of what the pool pays out. A swap that took its fee up front but did
-  not fill completely reverts (`PartialFill`).
-- Fees are minted as ERC-6909 claims during the swap. Once `minDistribute` has accrued (0.01 ETH, or 5 IMD),
-  the next swap hands them to the token; `distribute()` does the same for anyone. The hook keeps nothing.
+  not fill completely reverts (`PartialFill`). Slices and quoters can raise the total to at most `MAX_FEE_BPS`
+  (5%); the holders' 1.25% is a floor and every quoted extra goes to holders too.
+- Holder fees are minted as ERC-6909 claims during the swap. Once `minDistribute` has accrued (0.01 ETH, or
+  5 IMD), the next swap hands them to the token; `distribute()` does the same for anyone.
+- **Slices** send an extra share of each fee to *sinks* that spend it only through the hook (`buy`,
+  `addLiquidity`, `collectFees`, `take`). **Modules** subscribe to callbacks: guards may revert buys, liquidity
+  additions and donations; observers and quoters run gas-capped and can never block a trade. No module can
+  ever revert a sell or a liquidity removal.
+- **Council:** only `SwarmlingsCouncil` (a timelock, `DELAY` 2 days) can set slices and modules or hand
+  governance on; disabling a module needs no delay. At launch there are no slices and no modules.
 
-The total cost of a swap is 2.5%: 1.25% to NFT holders (this hook) and the pool's own 1.25% LP fee
+The total cost of a swap at launch is 2.5%: 1.25% to NFT holders (this hook) and the pool's own 1.25% LP fee
 (1% to the launch payer, 0.25% to IMD).
 
 ## Build and test
@@ -101,14 +114,16 @@ forge test
 Solidity 0.8.26, Cancun, optimizer 200 runs, no IR, `bytecode_hash = "none"`. Dependencies are vendored
 under `lib/` (see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)); tests need no network or RPC.
 
-The suite (132 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
+The suite (192 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
 IMD as currency1): all four fee modes with exact amounts, partial fills, other pools and launch-pool
 hijacking, unit boundaries (299,999.99 vs 300,000 LING), contracts and EIP-7702 wallets skipping NFTs,
 marketplace NFT sales, burns, `keep`, day-by-day payouts and quiet days, a flash-loan attempt to snipe a
 distribution, rewards with no holders, the 1,000-NFT auto-skip, creator fees split with DEV, both currencies
 on mainnet, a LING-only seeded pool, a 100-NFT whale buy, reentrancy on `claim` and `syncToken`, the
 validator, the renderer fallback, and stateful invariants (hook ledger, solvency, booked claims, NFT counts,
-nothing lost once every day has paid out).
+nothing lost once every day has paid out). `test/Hive.t.sol` covers the council's timelock, slice and module
+validation, the fee split in all four modes, guards that revert buys but never sells, observers that fail
+without blocking, the fee cap, every shipped primitive, and the hook-owned liquidity position.
 `test/fork/` repeats the validator and IMD checks against the real mainnet contracts when
 `MAINNET_RPC_URL` is set.
 

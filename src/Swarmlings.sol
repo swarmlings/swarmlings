@@ -23,7 +23,7 @@ interface IWETH {
 /// - all swap fees from SwarmlingsHook, in `rewardCurrency` (IMD on Ethereum mainnet, native ETH elsewhere);
 /// - half of the 5% creator fee on NFT sales, in ETH (the other half goes to DEV).
 /// @dev No owner powers, admin, proxy, pause, mint or fee on transfer: every transfer moves exactly the amount
-/// stated. `owner()` only tells marketplaces who edits the collection page; nothing in these contracts checks it.
+/// stated. Anyone may burn their own LING. `owner()` only tells marketplaces who edits the collection page; nothing in these contracts checks it.
 /// Rewards are paid by day: everything that arrives during one EPOCH (a UTC day) is paid out the next day at a
 /// constant rate per second, to whoever holds NFTs during that time. Holding for a moment (including flash loans)
 /// earns only that moment's share, and every day's payout is known in advance. Accrual runs and both sides are
@@ -235,7 +235,14 @@ contract Swarmlings is DN404 {
     function stream(uint256 pot)
         external
         view
-        returns (uint256 perSecond, uint256 dayEnds, uint256 tomorrow, uint256 total, uint256 claimed, uint256 unpaid)
+        returns (
+            uint256 perSecond,
+            uint256 dayEnds,
+            uint256 tomorrow,
+            uint256 total,
+            uint256 claimed,
+            uint256 unpaid
+        )
     {
         Pot memory p = _advance(_pot[pot], _totalNFTSupply());
         dayEnds = (uint256(p.epoch) + 1) * EPOCH;
@@ -373,6 +380,18 @@ contract Swarmlings is DN404 {
         super._transferFromNFT(from, to, id, msgSender);
     }
 
+    /// @notice Burns `amount` LING from the caller, and the Swarmlings it no longer backs. Supply only ever
+    /// shrinks this way; the Hive's buyback module uses it.
+    function burn(uint256 amount) external {
+        _burn(msg.sender, amount);
+    }
+
+    function _burn(address from, uint256 amount) internal override {
+        _accrueAll();
+        _settle(from);
+        super._burn(from, amount);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     function _payEth(address to, uint256 amount) private {
@@ -389,9 +408,13 @@ contract Swarmlings is DN404 {
     function _toString(uint256 v) private pure returns (string memory s) {
         if (v == 0) return "0";
         uint256 len;
-        for (uint256 t = v; t != 0; t /= 10) ++len;
+        for (uint256 t = v; t != 0; t /= 10) {
+            ++len;
+        }
         bytes memory b = new bytes(len);
-        for (; v != 0; v /= 10) b[--len] = bytes1(uint8(48 + v % 10));
+        for (; v != 0; v /= 10) {
+            b[--len] = bytes1(uint8(48 + v % 10));
+        }
         s = string(b);
     }
 }
