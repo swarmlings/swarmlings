@@ -37,7 +37,8 @@
    remainder the requester's EOA would receive 100,000,000 LING and mint 333 NFTs inside the launch
    transaction.
 5. Deploy the council (once per chain, any time): `forge script script/DeployCouncil.s.sol --rpc-url $RPC_URL
-   --private-key $TREASURY_PRIVATE_KEY --broadcast`. Until it has code, nothing can change the hook.
+   --private-key $TREASURY_PRIVATE_KEY --broadcast`. Until it has code, nothing can change the hook. Done on
+   Ethereum mainnet (see Deployments).
 6. To attach a primitive: deploy it (its constructor takes the hook), then from the dev wallet
    `council.execute(hook, abi.encodeCall(setSlices or setModules, …), memo)`; it applies at once.
    `council.post(memo)` writes a journal entry.
@@ -81,6 +82,7 @@ There is no keeper. Sinks that are due are poked inside swaps; anyone may also c
 | Chain | Contract | Address |
 | --- | --- | --- |
 | Ethereum mainnet | SwarmlingsRenderer (CREATE2) | `0x8d79e6677FA6E52190B39096f8496628811D8281` (tx `0x20f1d64795f947d618b3c56d1f82d668e38430ba9093501e3f0e225f38c6a96b`) |
+| Ethereum mainnet | SwarmlingsCouncil (CREATE2) | `0x4d0b3507D80f678d9e658Fd5482Ca6a96636A032` (tx `0x4b190c82dd964ee4ec806a8afdaf0c2d3da72836e780ea4e2b36bbf5a00a8392`, block 26142845, owner `0x92cEf4823119f3332A85A39023eEbA01a06890c4`) |
 | Sepolia | SwarmlingsRenderer (CREATE2) | `0x8d79e6677FA6E52190B39096f8496628811D8281` |
 | Sepolia (test, outside IMD) | Swarmlings | `0xA8f8a18e5E85639C46790B31d4f0ac2144Bf1dfC` |
 | Sepolia (test, outside IMD) | SwarmlingsMirror | `0x5EAee7e97d7c22C704814B884A738bfE18DF4cfd` |
