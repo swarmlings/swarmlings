@@ -9,15 +9,24 @@
   cannot touch the token, the holders' 1.25%, pending rewards, the hand-over, sells or liquidity removal, and
   it cannot change the snipe tax. The owner can hand the council to a timelock or a vote later. See docs/HIVE.md.
 - **Modules.** Each attached module is external code chosen by the council. A guard that reverts stops buys; an
-  observer or quoter that reverts is skipped and logged. Sinks can spend only their own claims and only through
-  the hook's services; liquidity they add is owned by the hook with no removal path.
+  observer, quoter or sink that reverts, runs out of its gas cap, or answers with anything but one clean word
+  is skipped and logged, and its return data is never copied, so no module can make a swap revert or cost more
+  than its gas cap. Sinks can spend only their own claims and only through the hook's services, at most once
+  per block; liquidity they add is owned by the hook with no removal path.
 
 - **Launch pool.** The hook binds to the first pool pairing LING with the reward currency at the launch tier
-  (static fee 12500, tick spacing 60). Other tiers are ignored, so a junk pool cannot take its place; the IMD
-  launcher still creates the real one in its deployment transaction.
+  (static fee 12500, any tick spacing). Other tiers cannot take its place, and the IMD launcher creates the
+  real one in the same transaction that deploys the hook, so nothing can bind first. Every other LING / reward
+  pool with the hook pays the holder fee as well.
 - **Marketplace layer.** `owner()` returns DEV for marketplaces. On OpenSea that address edits the collection
-  page and off-chain fee settings, and OpenSea's validator lets it change this collection's transfer policy.
-  None of that can touch LING balances, swaps or rewards, and LING transfers always move NFTs.
+  page and off-chain fee settings, and in OpenSea's validator it can change this collection's transfer policy,
+  up to blocking transfers made through the NFT contract. None of that can touch LING balances, swaps or
+  rewards, and LING transfers always move NFTs, so holders can never be locked out of moving their Swarmlings.
+- **Permit2.** DN404 gives Permit2 (`0x000000000022D473030F116dDEE9F6B43aC78BA3`) an infinite default
+  allowance over LING, as most Uniswap-era tokens do; a Permit2 signature moves LING (and the NFTs with it).
+  Holders can revoke it with `approve(PERMIT2, 0)`.
+- **Contracts holding NFTs.** Rewards belong to the holding address and only it can claim (`claim`,
+  `claimEth`, `claimToken`). An NFT sent to a contract with no claim path forfeits its rewards.
 - **Validator.** OpenSea's registry is external code with its own administrators. It only ever sees NFT
   transfers made through the NFT contract; if it ever refused them, holders still move NFTs by moving LING.
 - **Reward currency.** IMD on mainnet (`BridgedFP`, a LayerZero OFT, verified on Sourcify) has no pause,
@@ -46,8 +55,13 @@
   that leaves within `JIT_BLOCKS` of its last addition (scaled down linearly) and mints the same amount as
   holder claims; the LP's principal and LING fees are untouched, and nothing can revert. The hook's own
   positions are never penalized because v4 skips the hook's callbacks for its own actions.
-- **One poke per swap.** At most one due sink is poked after a swap, so a trade needs at most `POKE_GAS`
-  extra; the others wait for the next swap or a manual `poke()`.
+- **One poke per swap.** At most one sink is poked successfully after a swap, starting from a rotating cursor
+  so a sink that stays due cannot starve the others; a failed poke is logged and the next due sink tried; a
+  swap with too little gas left simply skips the poke. Sinks act at most once per block.
+- **Nested swaps.** A module may swap in another pool while a swap is in flight. Swap state (bps, buy flag,
+  fee) is kept per nesting depth in transient storage, and modules and pokes only run for the outermost swap.
+- **JIT guard on both sides.** Adding to a position collects its fees as well, so the penalty applies in
+  `afterAddLiquidity` and `afterRemoveLiquidity` alike.
 
 - **Snipe tax.** `snipeBps()` is a pure function of time since `launchedAt`: 40% at the launch block, linear to
   0 at 60 seconds, buys only, added after the council cap so the cap stays a bound on governance, not on
@@ -86,7 +100,13 @@
 - **Large buys.** Minting is linear in NFTs: about 1.46M gas for 100 NFTs locally. A wallet buying
   thousands of units at once should `setSkipNFT(true)` first.
 
-## Not done
+## Audit
 
-No external audit or live-chain rehearsal of this repository has happened yet. Mocks stand in for IMD in
-tests.
+An eight-domain review on the ethskills audit methodology (general, precision math, AMM / v4 hooks, ERC-20,
+ERC-721, access control and governance, DoS, flash loans) plus a CROPS review was run on commit `e706550`
+on 2026-10-10; the report, the per-domain findings and their proof-of-concept tests are in
+[docs/audit/2026-10-10](audit/2026-10-10/). No Critical finding. Every High and Medium needed a malicious or
+broken module chosen by the council; all were fixed in the following commit with regression tests
+(`test_audit_*`). Accepted: the council is a single key with no delay (the user's choice), the launch-pool
+binding trusts IMD's atomic launch, Permit2's default allowance, and the OpenSea editor's validator powers.
+No live-chain rehearsal of the launch itself has happened yet; mocks stand in for IMD in tests.

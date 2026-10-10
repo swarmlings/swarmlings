@@ -13,7 +13,8 @@
 | Reward payout | what arrives on one UTC day is paid out over the next day, per NFT per second |
 | Keep | `keep(ids)` puts the named ids first in the caller's list (last to burn) |
 | Auto skip | a transfer that would mint more than 800 NFTs switches the receiver to skipNFT instead (EIP-7825 cap: minting 800 ≈ 9.7M gas, 1,000 ≈ 12.1M) |
-| JIT guard | `JIT_BLOCKS = 10`: fees of liquidity removed within 10 blocks of its addition go to holders, pro rata |
+| JIT guard | `JIT_BLOCKS = 10`: reward-currency fees of a position changed (added to or removed) within 10 blocks of its last addition go to holders, pro rata |
+| Sink pokes | one successful poke per swap, rotating cursor, skipped when the swap brings too little gas; a sink acts at most once per block |
 | Renderer | `0x8d79e6677FA6E52190B39096f8496628811D8281` (CREATE2, see below) |
 | Hook constructor | `($poolManager, $token)` |
 | Hook flags | all 14 (`0x3FFF`), so later modules can use any callback |

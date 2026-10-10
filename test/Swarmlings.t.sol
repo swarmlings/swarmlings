@@ -183,6 +183,21 @@ contract SwarmlingsTest is Test {
         assertEq(mirror.balanceOf(alice), 1);
     }
 
+    function test_claimOneAssetAtATime() public {
+        _give(alice, UNIT);
+        ling.addRewards{value: 1 ether}();
+        vm.warp((block.timestamp / 1 days + 2) * 1 days);
+        (uint256 e,) = ling.pending(alice);
+        assertGt(e, 0);
+        vm.prank(alice);
+        uint256 got = ling.claimEth();
+        assertEq(got, e);
+        vm.prank(alice);
+        assertEq(ling.claimToken(), 0);
+        (e,) = ling.pending(alice);
+        assertEq(e, 0);
+    }
+
     function test_nextMintIdsFollowTheCycle() public {
         _give(alice, UNIT * 3); // ids 1,2,3
         uint256[] memory next = ling.nextMintIds(2);
@@ -193,7 +208,14 @@ contract SwarmlingsTest is Test {
         next = ling.nextMintIds(1);
         assertEq(next[0], 4, "the cycle moves on; 3 comes back when the cycle wraps");
         uint256[] memory later = ling.nextMintIds(3333);
+        assertEq(later.length, 3331, "only the free ids");
         assertEq(later[3330], 3, "after 4..3333 the burned id 3 is next");
+        // burning LING lowers DN404's id limit; the view follows it
+        vm.prank(launcher);
+        ling.burn(UNIT * 2);
+        later = ling.nextMintIds(5000);
+        assertEq(later.length, 3331 - 2);
+        assertEq(later[later.length - 1], 3);
     }
 
     // ------------------------------------------------------------------ streamed rewards
@@ -500,7 +522,7 @@ contract SwarmlingsTest is Test {
 
     function test_tokenURIPlaceholderWithoutRenderer() public {
         _give(alice, UNIT);
-        assertEq(mirror.tokenURI(1), 'data:application/json;utf8,{"name":"Swarmling #1"}');
+        assertEq(mirror.tokenURI(1), 'data:application/json;utf8,{"name":"Swarmling 1"}');
     }
 
     function test_tokenURIComesFromRenderer() public {
@@ -512,7 +534,7 @@ contract SwarmlingsTest is Test {
     function test_tokenURISurvivesARevertingRenderer() public {
         vm.etch(ling.RENDERER(), address(new RevertingRenderer()).code);
         _give(alice, UNIT);
-        assertEq(mirror.tokenURI(1), 'data:application/json;utf8,{"name":"Swarmling #1"}');
+        assertEq(mirror.tokenURI(1), 'data:application/json;utf8,{"name":"Swarmling 1"}');
     }
 }
 

@@ -10,15 +10,17 @@ import {ISwarmlingsHook} from "../interfaces/IHive.sol";
 
 /// @title TwapOracle
 /// @notice A time-weighted average price for the launch pool, kept by the Hive. Observer module on
-/// `BEFORE_SWAP`: the first swap of each block records the tick the block started with, so a trade cannot move
-/// the price it is measured against. Ticks are in LING terms: higher means LING is dearer in the reward currency.
+/// `BEFORE_SWAP`: the first swap of each block records the tick the block started with, which is the tick that
+/// held since the previous observation (Uniswap v3 semantics), so a trade cannot move the price it is measured
+/// against. Time after the last observation is weighted with the pool's live tick. Ticks are in LING terms:
+/// higher means LING is dearer in the reward currency.
 contract TwapOracle {
     using StateLibrary for IPoolManager;
 
     struct Observation {
         uint32 blockTimestamp;
-        int56 tickCumulative;
-        int24 tick; // valid from blockTimestamp on
+        int56 tickCumulative; // tick-seconds accumulated up to blockTimestamp
+        int24 tick; // the tick that held from the previous observation up to this one
     }
 
     uint16 public constant CARDINALITY = 2048;
@@ -65,17 +67,23 @@ contract TwapOracle {
         }
         Observation memory last = observations[index];
         if (last.blockTimestamp == now_) return; // only the block's first observation counts
-        int56 cumulative = last.tickCumulative + int56(last.tick) * int56(uint56(now_ - last.blockTimestamp));
+        // `tick` held from the last observation until now
+        int56 cumulative = last.tickCumulative + int56(tick) * int56(uint56(now_ - last.blockTimestamp));
         uint16 next = (index + 1) % CARDINALITY;
         observations[next] = Observation(now_, cumulative, tick);
         index = next;
         if (count < CARDINALITY) ++count;
     }
 
-    /// @notice The current tick in LING terms, as last observed.
+    /// @notice The pool's tick right now, in LING terms.
     function lastTick() public view returns (int24) {
         if (count == 0) revert NoData();
-        return observations[index].tick;
+        return _liveTick();
+    }
+
+    function _liveTick() private view returns (int24) {
+        (, int24 poolTick,,) = poolManager.getSlot0(launchPool);
+        return rewardIsCurrency0 ? -poolTick : poolTick;
     }
 
     /// @notice The arithmetic mean tick over the last `secondsAgo` seconds.
@@ -88,11 +96,12 @@ contract TwapOracle {
         return int24(mean);
     }
 
-    /// @dev Tick-seconds accumulated up to `t`, from the latest observation at or before `t`.
+    /// @dev Tick-seconds accumulated up to `t`: after the last observation the live tick holds; between two
+    /// observations the later one's tick held.
     function _cumulativeAt(uint32 t) private view returns (int56) {
         Observation memory last = observations[index];
         if (t >= last.blockTimestamp) {
-            return last.tickCumulative + int56(last.tick) * int56(uint56(t - last.blockTimestamp));
+            return last.tickCumulative + int56(_liveTick()) * int56(uint56(t - last.blockTimestamp));
         }
         // binary search over the ring, oldest first
         uint256 n = count;
@@ -107,6 +116,7 @@ contract TwapOracle {
             else hi = mid - 1;
         }
         Observation memory a = observations[(oldest + lo) % CARDINALITY];
-        return a.tickCumulative + int56(a.tick) * int56(uint56(t - a.blockTimestamp));
+        Observation memory b = observations[(oldest + lo + 1) % CARDINALITY]; // exists: t < last.blockTimestamp
+        return a.tickCumulative + int56(b.tick) * int56(uint56(t - a.blockTimestamp));
     }
 }

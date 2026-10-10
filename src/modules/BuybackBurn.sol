@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
+import {TransientStateLibrary} from "v4-core/src/libraries/TransientStateLibrary.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {HiveSink} from "./HiveSink.sol";
 import {ISwarmlingsHook, ISwarmlingsToken} from "../interfaces/IHive.sol";
 
@@ -8,6 +10,8 @@ import {ISwarmlingsHook, ISwarmlingsToken} from "../interfaces/IHive.sol";
 /// @notice Spends its fee share buying LING in the launch pool and burns it. Each buyback moves the price at
 /// most about 1%; what the market does not absorb waits for the next one. Anyone may trigger it.
 contract BuybackBurn is HiveSink {
+    using TransientStateLibrary for IPoolManager;
+
     /// @notice Smallest budget worth a buyback.
     uint256 public immutable minBudget;
     uint256 public spent;
@@ -20,12 +24,14 @@ contract BuybackBurn is HiveSink {
     }
 
     function due() external view returns (bool) {
-        return claims(reward) >= minBudget;
+        return lastPokeBlock != block.number && claims(reward) >= minBudget;
     }
 
     function poke() external {
         uint256 budget = claims(reward);
-        if (budget < minBudget) return;
+        if (budget < minBudget || !_oncePerBlock()) return;
+        // a router mid-settlement in LING would lose its credit to our take; wait for the next poke
+        if (poolManager.getSyncedCurrency() == lingCurrency) return;
         if (budget > uint256(uint128(type(int128).max))) budget = uint256(uint128(type(int128).max));
         (uint256 s, uint256 got) = hook.buy(budget, _buyLimit());
         uint256 have = claims(lingCurrency);

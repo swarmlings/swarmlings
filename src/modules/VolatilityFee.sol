@@ -44,11 +44,12 @@ contract VolatilityFee {
     }
 
     /// @notice Extra bps for a swap: the current drop below the average, for sells only.
-    function quoteFee(address, PoolKey calldata, SwapParams calldata, bool buy, bytes calldata)
+    function quoteFee(address, PoolKey calldata, SwapParams calldata params, bytes calldata)
         external
         view
         returns (uint256)
     {
+        bool buy = params.zeroForOne == rewardIsCurrency0;
         if (buy) return 0;
         return extraNow();
     }

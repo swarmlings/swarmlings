@@ -95,6 +95,8 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     mapping(address => bool) public isSink;
     /// @notice Block of the last liquidity addition per position (pool, owner, range, salt), for the JIT guard.
     mapping(bytes32 => uint64) public lastAdded;
+    /// @notice Where the next poke round starts, so one stuck sink cannot starve the others.
+    uint8 public pokeCursor;
 
     /// @notice Holder fees ever collected, and holder fees ever handed to the token.
     /// totalFees == distributed + claims held by the hook.
@@ -111,7 +113,6 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     error PartialFill();
     error ReentrantCall();
     error UnexpectedUnlock();
-    error InsufficientGas();
     error TooMany();
     error BadEntry();
     error Duplicate();
@@ -174,9 +175,10 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         _;
     }
 
-    /// @dev Transient slot 1 locks the services; slot 2 authorizes exactly one unlock callback; slot 3 carries
-    /// the current swap's total fee bps (and buy flag in the top bit) from beforeSwap to afterSwap; slot 4 the
-    /// fee while after-swap modules run.
+    /// @dev Transient slot 1 locks the services; slot 2 authorizes exactly one unlock callback; slot 5 counts
+    /// how many charged swaps are in flight (a module may swap in another charged pool); for each depth d, slot
+    /// 16 + 2d carries that swap's total fee bps with the buy flag in the top bit, and 17 + 2d its fee while
+    /// after-swap modules run.
     modifier nonReentrant() {
         uint256 locked;
         assembly ("memory-safe") { locked := tload(1) }
@@ -228,12 +230,23 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
 
     /// @notice Inside a swap callback: whether the swap is a buy, its total fee bps and (after the swap) the fee.
     function currentSwap() external view returns (bool buy, uint256 bps, uint256 fee) {
+        uint256 depth;
         assembly ("memory-safe") {
-            bps := tload(3)
-            fee := tload(4)
+            depth := tload(5)
+        }
+        if (depth == 0) return (false, 0, 0);
+        (uint256 slot, uint256 feeSlot) = _swapSlots(depth - 1);
+        assembly ("memory-safe") {
+            bps := tload(slot)
+            fee := tload(feeSlot)
         }
         buy = bps >> 255 == 1;
         bps &= type(uint128).max;
+    }
+
+    function _swapSlots(uint256 depth) private pure returns (uint256 bpsSlot, uint256 feeSlot) {
+        bpsSlot = 16 + 2 * depth;
+        feeSlot = bpsSlot + 1;
     }
 
     /// @notice The extra bps a buy pays right now because of the snipe tax; zero after `SNIPE_WINDOW`.
@@ -295,9 +308,14 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
         bool buy = _isBuy(params);
+        uint256 depth;
+        assembly ("memory-safe") {
+            depth := tload(5)
+            tstore(5, add(depth, 1))
+        }
         _distributeDuringSwap();
-        uint256 bps = _quote(sender, key, params, buy, hookData);
-        if (_isLaunch(key)) {
+        uint256 bps = _quote(buy, depth);
+        if (depth == 0 && _isLaunch(key)) {
             _runModules(Callbacks.BEFORE_SWAP, _relay(IHiveModule.onBeforeSwap.selector), buy);
         }
         if (_rewardSpecified(params)) {
@@ -317,8 +335,15 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         bytes calldata hookData
     ) external onlyPoolManager returns (bytes4, int128) {
         if (!_isCharged(key)) return (IHooks.afterSwap.selector, 0);
+        uint256 depth;
+        assembly ("memory-safe") {
+            depth := sub(tload(5), 1)
+        }
+        (uint256 bpsSlot, uint256 feeSlot) = _swapSlots(depth);
         uint256 bps;
-        assembly ("memory-safe") { bps := tload(3) }
+        assembly ("memory-safe") {
+            bps := tload(bpsSlot)
+        }
         bps &= type(uint128).max;
         bool buy = _isBuy(params);
         int256 rewardDelta = rewardIsCurrency0 ? delta.amount0() : delta.amount1();
@@ -336,17 +361,20 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
             _collect(fee, bps, buy);
             returned = fee.toInt128();
         }
-        if (_isLaunch(key)) {
+        if (depth == 0 && _isLaunch(key)) {
             assembly ("memory-safe") {
-                tstore(4, fee)
+                tstore(feeSlot, fee)
             }
             _runModules(Callbacks.AFTER_SWAP, _relay(IHiveModule.onAfterSwap.selector), buy);
             assembly ("memory-safe") {
-                tstore(4, 0)
+                tstore(feeSlot, 0)
             }
             _pokeSinks();
         }
-        assembly ("memory-safe") { tstore(3, 0) }
+        assembly ("memory-safe") {
+            tstore(bpsSlot, 0)
+            tstore(5, depth)
+        }
         return (IHooks.afterSwap.selector, returned);
     }
 
@@ -375,8 +403,13 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         if (_isLaunch(key)) {
             _runModules(Callbacks.AFTER_ADD_LIQUIDITY, _relay(IHiveModule.onAfterAddLiquidity.selector), true);
         }
-        if (_isCharged(key)) lastAdded[_positionKey(key, sender, params)] = uint64(block.number);
-        return (IHooks.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
+        BalanceDelta penalty = BalanceDeltaLibrary.ZERO_DELTA;
+        if (_isCharged(key)) {
+            // adding to a position collects its fees too, so a dust top-up must not dodge the JIT guard
+            penalty = _jitPenalty(key, sender, params, feesAccrued);
+            lastAdded[_positionKey(key, sender, params)] = uint64(block.number);
+        }
+        return (IHooks.afterAddLiquidity.selector, penalty);
     }
 
     /// @dev Removing liquidity can never be blocked: observers only.
@@ -469,32 +502,54 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
 
     // ------------------------------------------------------------------ modules
 
-    /// @dev Asks every quoter for an extra fee and stores the swap's total bps in transient slot 3.
-    function _quote(
-        address sender,
-        PoolKey calldata key,
-        SwapParams calldata params,
-        bool buy,
-        bytes calldata hookData
-    ) private returns (uint256 bps) {
+    /// @dev Asks every quoter for an extra fee and stores the swap's total bps in this depth's transient slot.
+    /// The buy flag is stored first so quoters can read it through `currentSwap()`. A quoter that fails, runs
+    /// out of its gas or answers with anything but one word adds nothing; its answer is clamped before it is
+    /// added, so no quoter can revert a swap.
+    function _quote(bool buy, uint256 depth) private returns (uint256 bps) {
+        (uint256 slot,) = _swapSlots(depth);
+        uint256 flag = buy ? uint256(1) << 255 : 0;
+        assembly ("memory-safe") {
+            tstore(slot, or(flag, 0))
+        }
         bps = feeBps();
         uint256 n = _modules.length;
-        for (uint256 i; i < n; ++i) {
-            Module memory m = _modules[i];
-            if (m.callbacks & Callbacks.QUOTE == 0) continue;
-            _requireGas();
-            try IHiveModule(m.addr).quoteFee{gas: MODULE_GAS}(sender, key, params, buy, hookData) returns (
-                uint256 extra
-            ) {
-                bps += extra;
-            } catch {
-                emit ModuleFailed(m.addr, IHiveModule.quoteFee.selector);
+        if (n != 0 && depth == 0) {
+            bytes memory data = _relay(IHiveModule.quoteFee.selector);
+            for (uint256 i; i < n; ++i) {
+                Module memory m = _modules[i];
+                if (m.callbacks & Callbacks.QUOTE == 0) continue;
+                (bool ok, uint256 extra) = _hasGas() ? _staticWord(m.addr, data) : (false, 0);
+                if (!ok) {
+                    emit ModuleFailed(m.addr, IHiveModule.quoteFee.selector);
+                    continue;
+                }
+                bps += extra > MAX_FEE_BPS ? MAX_FEE_BPS : extra;
             }
         }
         if (bps > MAX_FEE_BPS) bps = MAX_FEE_BPS;
         if (buy) bps += snipeBps();
-        uint256 packed = bps | (buy ? uint256(1) << 255 : 0);
-        assembly ("memory-safe") { tstore(3, packed) }
+        uint256 packed = bps | flag;
+        assembly ("memory-safe") {
+            tstore(slot, packed)
+        }
+    }
+
+    /// @dev A gas-capped staticcall that reads exactly one word back and copies nothing else.
+    function _staticWord(address target, bytes memory data) private view returns (bool ok, uint256 word) {
+        uint256 g = MODULE_GAS;
+        assembly ("memory-safe") {
+            ok := staticcall(g, target, add(data, 32), mload(data), 0, 32)
+            ok := and(ok, gt(returndatasize(), 31))
+            word := mload(0)
+        }
+    }
+
+    /// @dev A gas-capped call whose return data is never copied, so a module cannot make the hook pay for it.
+    function _callNoReturn(address target, bytes memory data, uint256 gasCap) private returns (bool ok) {
+        assembly ("memory-safe") {
+            ok := call(gasCap, target, 0, add(data, 32), mload(data), 0, 0)
+        }
     }
 
     /// @dev The module callbacks for initialize, liquidity and donate take exactly the arguments the manager sent
@@ -503,52 +558,72 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         return abi.encodePacked(selector, msg.data[4:]);
     }
 
-    /// @dev Calls every module subscribed to `bit`. A guard's revert is passed through when `mayRevert`; every
-    /// other call is gas-capped and its failure only logged.
+    /// @dev Calls every module subscribed to `bit`. A guard's revert is passed through when `mayRevert` (with
+    /// at most 256 bytes of its reason); every other call is gas-capped, copies no return data, and its failure
+    /// is only logged. A swap that brings too little gas for an observer skips it and logs that too.
     function _runModules(uint16 bit, bytes memory data, bool mayRevert) private {
         uint256 n = _modules.length;
         if (n == 0) return;
         bytes4 selector;
-        assembly ("memory-safe") { selector := mload(add(data, 32)) }
+        assembly ("memory-safe") {
+            selector := mload(add(data, 32))
+        }
         for (uint256 i; i < n; ++i) {
             Module memory m = _modules[i];
             if (m.callbacks & bit == 0) continue;
             if (m.guard && mayRevert) {
-                (bool ok, bytes memory ret) = m.addr.call(data);
-                if (!ok) {
-                    assembly ("memory-safe") { revert(add(ret, 32), mload(ret)) }
+                bool ok;
+                assembly ("memory-safe") {
+                    ok := call(gas(), mload(m), 0, add(data, 32), mload(data), 0, 0)
+                    if iszero(ok) {
+                        let size := returndatasize()
+                        if gt(size, 256) { size := 256 }
+                        let ptr := mload(0x40)
+                        returndatacopy(ptr, 0, size)
+                        revert(ptr, size)
+                    }
                 }
-            } else {
-                _requireGas();
-                (bool ok,) = m.addr.call{gas: MODULE_GAS}(data);
-                if (!ok) emit ModuleFailed(m.addr, selector);
+            } else if (!_hasGas() || !_callNoReturn(m.addr, data, MODULE_GAS)) {
+                emit ModuleFailed(m.addr, selector);
             }
         }
     }
 
-    /// @dev A capped call must really get its cap, or a trader could starve observers of gas on purpose.
-    function _requireGas() private view {
-        if (gasleft() < MODULE_GAS + MODULE_GAS / 63 + 30_000) revert InsufficientGas();
+    /// @dev Whether a capped module call would really get its cap right now.
+    function _hasGas() private view returns (bool) {
+        return gasleft() >= MODULE_GAS + MODULE_GAS / 63 + 30_000;
     }
 
-    /// @dev After a swap, the first sink that says it is due gets to spend its claims. Never blocks the trade.
+    /// @dev After a swap, one due sink gets to spend its claims, starting from where the last round stopped so
+    /// a sink that stays due cannot starve the others. A failed poke is logged and the next due sink tried.
+    /// A swap that brings too little gas for a poke just leaves it for the next one. Never blocks the trade.
     function _pokeSinks() private {
         uint256 n = _slices.length;
-        for (uint256 i; i < n; ++i) {
+        if (n == 0) return;
+        uint256 start = pokeCursor % n;
+        bytes memory data = abi.encodeCall(IHiveSink.poke, ());
+        for (uint256 k; k < n; ++k) {
+            uint256 i = (start + k) % n;
             Slice memory s = _slices[i];
-            if (!s.poke) continue;
-            bool due;
-            try IHiveSink(s.sink).due{gas: 50_000}() returns (bool d) {
-                due = d;
-            } catch {}
-            if (!due) continue;
-            if (gasleft() < POKE_GAS + POKE_GAS / 63 + 30_000) revert InsufficientGas();
-            try IHiveSink(s.sink).poke{gas: POKE_GAS}() {}
-            catch {
-                emit SinkFailed(s.sink);
-            }
-            return; // at most one poke per swap keeps the gas a trade may need bounded
+            if (!s.poke || !_isDue(s.sink)) continue;
+            if (gasleft() < POKE_GAS + POKE_GAS / 63 + 60_000) return;
+            pokeCursor = uint8((i + 1) % n);
+            if (_callNoReturn(s.sink, data, POKE_GAS)) return;
+            emit SinkFailed(s.sink);
         }
+    }
+
+    /// @dev `due()` under a small gas cap; anything but a clean `true` counts as not due.
+    function _isDue(address sink) private view returns (bool) {
+        bytes memory data = abi.encodeCall(IHiveSink.due, ());
+        bool ok;
+        uint256 word;
+        assembly ("memory-safe") {
+            ok := staticcall(50000, sink, add(data, 32), mload(data), 0, 32)
+            ok := and(ok, gt(returndatasize(), 31))
+            word := mload(0)
+        }
+        return ok && word == 1;
     }
 
     // ------------------------------------------------------------------ fee split
@@ -683,6 +758,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
     function _dispatch(bytes memory data) private returns (bytes memory) {
         (uint8 op, bytes memory args) = abi.decode(data, (uint8, bytes));
         if (op == OP_DISTRIBUTE) {
+            if (!reward.isAddressZero() && poolManager.getSyncedCurrency() == reward) revert Synced();
             _handOver(pendingFees(), false);
             return "";
         }
@@ -776,6 +852,7 @@ contract SwarmlingsHook is IHooks, IUnlockCallback, ISwarmlingsHook {
         uint256 sum;
         for (uint256 i; i < s.length; ++i) {
             if (s[i].sink.code.length == 0 || s[i].bps == 0) revert BadEntry();
+            if (s[i].sink == address(this) || s[i].sink == ling) revert BadEntry();
             for (uint256 j; j < i; ++j) {
                 if (s[j].sink == s[i].sink) revert Duplicate();
             }

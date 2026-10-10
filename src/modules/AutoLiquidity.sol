@@ -33,12 +33,12 @@ contract AutoLiquidity is HiveSink {
     }
 
     function due() external view returns (bool) {
-        return claims(reward) >= threshold;
+        return lastPokeBlock != block.number && claims(reward) >= threshold;
     }
 
     function poke() external {
         uint256 r = claims(reward);
-        if (r < threshold) return;
+        if (r < threshold || !_oncePerBlock()) return;
         uint256 half = r / 2;
         if (half > uint256(uint128(type(int128).max))) half = uint256(uint128(type(int128).max));
         hook.buy(half, _buyLimit());

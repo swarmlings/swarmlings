@@ -21,6 +21,10 @@ abstract contract HiveSink is IHiveSink {
     bool public immutable rewardIsCurrency0;
     PoolId public immutable launchPool;
 
+    /// @notice The block of the last poke; a sink acts at most once per block so a single transaction cannot
+    /// walk it down the price band step by step.
+    uint64 public lastPokeBlock;
+
     error OnlyHook();
 
     constructor(ISwarmlingsHook hook_) {
@@ -32,6 +36,13 @@ abstract contract HiveSink is IHiveSink {
         rewardIsCurrency0 = hook_.rewardIsCurrency0();
         launchPool = hook_.launchPool();
         poolManager.setOperator(address(hook_), true);
+    }
+
+    /// @dev Marks this block as used; returns false when the sink already acted in it.
+    function _oncePerBlock() internal returns (bool) {
+        if (lastPokeBlock == block.number) return false;
+        lastPokeBlock = uint64(block.number);
+        return true;
     }
 
     /// @notice This sink's claims in `c`, held inside the PoolManager.

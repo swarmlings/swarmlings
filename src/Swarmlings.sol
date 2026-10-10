@@ -38,8 +38,9 @@ contract Swarmlings is DN404 {
     address public constant RENDERER = 0x8d79e6677FA6E52190B39096f8496628811D8281;
     /// @notice Identity.md (IMD): the swap-fee reward on Ethereum mainnet.
     address public constant IMD = 0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7;
-    /// @notice WETH on Ethereum mainnet; creator fees paid in WETH are unwrapped and counted as ETH.
-    address public constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    /// @notice The chain's wrapped native token; creator fees paid in it are unwrapped and counted as ETH.
+    /// Ethereum mainnet, the OP-stack chains (Base, Optimism) and Arbitrum One are known; elsewhere none.
+    address public immutable WETH;
     /// @notice The project's dev and treasury wallet: receives half of the ETH that arrives as creator fees, and
     /// nothing from swaps. It holds no LING allocation and has no power in these contracts.
     address public constant DEV = 0x92cEf4823119f3332A85A39023eEbA01a06890c4;
@@ -88,6 +89,7 @@ contract Swarmlings is DN404 {
 
     constructor() {
         rewardCurrency = _chooseRewardCurrency();
+        WETH = _wrappedNative();
         _initializeDN404(INITIAL_SUPPLY, msg.sender, address(new SwarmlingsMirror(msg.sender)));
     }
 
@@ -101,6 +103,14 @@ contract Swarmlings is DN404 {
         }
         _;
         assembly ("memory-safe") { tstore(0, 0) }
+    }
+
+    function _wrappedNative() private view returns (address) {
+        uint256 id = block.chainid;
+        if (id == 1) return 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+        if (id == 8453 || id == 10) return 0x4200000000000000000000000000000000000006;
+        if (id == 42161) return 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1;
+        return address(0);
     }
 
     /// @dev IMD on Ethereum mainnet, native ETH everywhere else. Virtual only for tests.
@@ -146,12 +156,15 @@ contract Swarmlings is DN404 {
     /// that exist, so a burned id comes back when the cycle reaches it.
     function nextMintIds(uint256 n) external view returns (uint256[] memory ids) {
         DN404Storage storage $ = _getDN404Storage();
+        uint256 limit = totalSupply() / UNIT; // DN404's live id limit: it falls as LING is burned
+        uint256 free = limit - _totalNFTSupply();
+        if (n > free) n = free;
         ids = new uint256[](n);
-        uint256 id = _wrapNFTId($.nextTokenId, MAX_NFTS);
+        uint256 id = _wrapNFTId($.nextTokenId, limit);
         for (uint256 i; i < n; ++i) {
-            while (_exists(id)) id = _wrapNFTId(id + 1, MAX_NFTS);
+            while (_exists(id)) id = _wrapNFTId(id + 1, limit);
             ids[i] = id;
-            id = _wrapNFTId(id + 1, MAX_NFTS);
+            id = _wrapNFTId(id + 1, limit);
         }
     }
 
@@ -166,7 +179,7 @@ contract Swarmlings is DN404 {
                 return uri;
             } catch {}
         }
-        return string.concat('data:application/json;utf8,{"name":"Swarmling #', _toString(id), '"}');
+        return string.concat('data:application/json;utf8,{"name":"Swarmling ', _toString(id), '"}');
     }
 
     /// @notice Puts `ids` (yours) first in your list, in this order, so they are the last to burn when you sell.
@@ -219,12 +232,26 @@ contract Swarmlings is DN404 {
 
     /// @notice Pays the caller everything their NFTs have earned, in ETH and in the reward token.
     function claim() external nonReentrant returns (uint256 eth, uint256 token) {
+        return _claim(true, true);
+    }
+
+    /// @notice Pays only the caller's ETH, for holders whose reward-token payout fails for some reason.
+    function claimEth() external nonReentrant returns (uint256 eth) {
+        (eth,) = _claim(true, false);
+    }
+
+    /// @notice Pays only the caller's reward token, for holders that cannot receive ETH.
+    function claimToken() external nonReentrant returns (uint256 token) {
+        (, token) = _claim(false, true);
+    }
+
+    function _claim(bool wantEth, bool wantToken) private returns (uint256 eth, uint256 token) {
         _syncEth();
         _syncToken();
         _accrueAll();
         _settle(msg.sender);
-        eth = _owed[msg.sender][ETH_POT];
-        token = _owed[msg.sender][TOKEN_POT];
+        if (wantEth) eth = _owed[msg.sender][ETH_POT];
+        if (wantToken) token = _owed[msg.sender][TOKEN_POT];
         if (eth != 0) {
             _owed[msg.sender][ETH_POT] = 0;
             _pot[ETH_POT].accounted -= eth;
@@ -296,9 +323,10 @@ contract Swarmlings is DN404 {
     // ------------------------------------------------------------------ streaming
 
     function _syncEth() private {
-        if (block.chainid == 1 && WETH.code.length != 0) {
-            uint256 w = IWETH(WETH).balanceOf(address(this));
-            if (w != 0) IWETH(WETH).withdraw(w);
+        address weth = WETH;
+        if (weth != address(0) && weth.code.length != 0) {
+            uint256 w = IWETH(weth).balanceOf(address(this));
+            if (w != 0) IWETH(weth).withdraw(w);
         }
         Pot storage p = _pot[ETH_POT];
         uint256 fresh = address(this).balance - p.accounted;
@@ -314,8 +342,9 @@ contract Swarmlings is DN404 {
         address c = rewardCurrency;
         if (c == address(0)) return;
         Pot storage p = _pot[TOKEN_POT];
-        uint256 fresh = IERC20Lite(c).balanceOf(address(this)) - p.accounted;
-        if (fresh == 0) return;
+        uint256 bal = IERC20Lite(c).balanceOf(address(this));
+        if (bal <= p.accounted) return; // never underflow: a shortfall is simply nothing new
+        uint256 fresh = bal - p.accounted;
         p.accounted += fresh;
         _stream(TOKEN_POT, fresh);
     }

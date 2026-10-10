@@ -31,7 +31,7 @@ The token you hold, its address and the holders' share never change; what a trad
 | 1.25% of every buy and sell goes to NFT holders, in the reward currency, paid by day | `HOLDER_FEE_BPS`, the token's pots |
 | The whole hook fee, slices and quoted extras included, is at most 5% | `MAX_FEE_BPS` |
 | No module can ever revert a sell or a liquidity removal | `_runModules(…, mayRevert=false)` on those paths |
-| Observers and quoters run under a gas cap; their failure is logged, never fatal | `MODULE_GAS`, `ModuleFailed` |
+| Observers and quoters run under a gas cap, their return data is never copied, and a bad answer counts as none; their failure is logged, never fatal | `MODULE_GAS`, `_staticWord`, `_callNoReturn`, `ModuleFailed` |
 | Sinks spend their share only through the hook's four services; nothing else touches claims | `onlySink`, `_dispatch` |
 | Liquidity added by a sink belongs to the hook and has no removal path, ever | `addLiquidity`, no negative delta anywhere |
 | Position fees in the reward currency go to holders, LING fees back to the sink | `_settleSide` |
@@ -56,8 +56,10 @@ they spend, sells `bps` of what the pool pays out; up-front fees are checked aga
 and holders get the rest, which includes anything a quoter added. `FeeCollected(buy, fee, toHolders, bps)` logs
 every swap.
 
-After the swap, the first slice with `poke = true` whose sink reports `due()` is poked with `POKE_GAS` (one
-poke per swap). A sink that is not due, or fails, costs the trader nothing.
+After the swap, one slice with `poke = true` whose sink reports `due()` is poked with `POKE_GAS`, starting from
+a rotating cursor; a failed poke is logged and the next due sink tried. A sink that is not due, or fails, or a
+swap that brings too little gas, costs the trader nothing: the poke simply waits. Sinks act at most once per
+block.
 
 ## Services for sinks
 
@@ -95,7 +97,10 @@ modules.
   (`IHiveModule`). `hook.currentSwap()` tells it whether the swap is a buy, the total bps and, after the swap,
   the fee. Check `msg.sender == hook`. Guards may revert; everything else should stay under `MODULE_GAS`
   (200,000).
-- A **quoter** implements `quoteFee(...)` as a `view` returning extra bps. Fail open.
+- A **quoter** implements `quoteFee(...)` as a `view` returning exactly one word of extra bps (anything else
+  counts as zero). Fail open.
+- Modules may read the pool and even swap in other pools, but a swap they make in a charged pool runs without
+  modules; swap state is kept per nesting depth so the outer swap's fee is never affected.
 
 Then the council's owner calls `execute(hook, setSlices or setModules, memo)` and it applies at once.
 

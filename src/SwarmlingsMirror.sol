@@ -55,11 +55,14 @@ contract SwarmlingsMirror is DN404Mirror, ICreatorToken {
     /// @notice ERC-7572 collection metadata, built on chain; the logo comes from the token's renderer.
     function contractURI() external view returns (string memory) {
         string memory image;
-        try ILogo(IOwnerView(baseERC20()).RENDERER()).logoSVG() returns (string memory svg) {
-            image = string.concat('"image":"data:image/svg+xml;utf8,', _escape(bytes(svg)), '",');
-        } catch {}
+        address renderer = IOwnerView(baseERC20()).RENDERER();
+        if (renderer.code.length != 0) {
+            try ILogo(renderer).logoSVG() returns (string memory svg) {
+                image = string.concat('"image":"data:image/svg+xml;utf8,', _escape(bytes(svg)), '",');
+            } catch {}
+        }
         return string.concat(
-            'data:application/json;utf8,{"name":"Swarmlings","description":"3,333 riso-printed robots that live inside a token balance: hold 300,000 LING and a Swarmling appears in your wallet. Every swap pays 1.25% to the people who hold them.",',
+            'data:application/json;utf8,{"name":"Swarmlings","description":"3,333 riso-printed robots that live inside a token balance: hold 300,000 LING and a Swarmling appears in your wallet. Every swap pays 1.25 percent to the people who hold them.",',
             image,
             '"external_link":"https://x.com/SwarmlingsIMD","collaborators":["',
             _hex(IOwnerView(baseERC20()).owner()),

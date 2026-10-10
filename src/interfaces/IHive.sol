@@ -87,12 +87,12 @@ interface IHiveModule {
         bytes calldata hookData
     ) external;
     /// @notice Extra fee, in bps of the swap's reward-currency amount, on top of the configured fee. The hook caps
-    /// the total at `MAX_FEE_BPS`; the extra goes to NFT holders.
+    /// the total at `MAX_FEE_BPS`; the extra goes to NFT holders. Same arguments as the manager's `beforeSwap`
+    /// (`ISwarmlingsHook.currentSwap()` tells whether it is a buy); must return exactly one word.
     function quoteFee(
         address sender,
         PoolKey calldata key,
         SwapParams calldata params,
-        bool buy,
         bytes calldata hookData
     ) external view returns (uint256 extraBps);
 }

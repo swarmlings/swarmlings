@@ -163,7 +163,7 @@
         ]
       },
       {
-        "name": "",
+        "name": "params",
         "type": "tuple",
         "internalType": "struct SwapParams",
         "components": [
@@ -183,11 +183,6 @@
             "internalType": "uint160"
           }
         ]
-      },
-      {
-        "name": "buy",
-        "type": "bool",
-        "internalType": "bool"
       },
       {
         "name": "",

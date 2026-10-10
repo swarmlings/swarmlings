@@ -301,6 +301,32 @@
   },
   {
     "type": "function",
+    "name": "claimEth",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "eth",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "claimToken",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "token",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "decimals",
     "inputs": [],
     "outputs": [

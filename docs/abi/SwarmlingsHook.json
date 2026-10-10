@@ -1422,6 +1422,19 @@
   },
   {
     "type": "function",
+    "name": "pokeCursor",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "poolManager",
     "inputs": [],
     "outputs": [
@@ -1991,11 +2004,6 @@
   {
     "type": "error",
     "name": "FeeTooHigh",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InsufficientGas",
     "inputs": []
   },
   {

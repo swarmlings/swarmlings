@@ -11,6 +11,7 @@ import {Currency} from "v4-core/src/types/Currency.sol";
 import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
+import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {Swarmlings} from "../src/Swarmlings.sol";
 import {SwarmlingsHook} from "../src/SwarmlingsHook.sol";
 import {SwarmlingsCouncil} from "../src/SwarmlingsCouncil.sol";
@@ -40,12 +41,28 @@ contract FlexModule {
         extra = e;
     }
 
-    function quoteFee(address, PoolKey calldata, SwapParams calldata, bool, bytes calldata)
+    uint256 public bombBytes; // return this much junk from every callback
+    bool public silentQuote; // answer quoteFee with no data
+
+    function setBomb(uint256 b) external {
+        bombBytes = b;
+    }
+
+    function setSilentQuote(bool v) external {
+        silentQuote = v;
+    }
+
+    function quoteFee(address, PoolKey calldata, SwapParams calldata, bytes calldata)
         external
         view
         returns (uint256)
     {
         if (revertAlways) revert Nope();
+        if (silentQuote) {
+            assembly {
+                return(0, 0)
+            }
+        }
         return extra;
     }
 
@@ -53,6 +70,55 @@ contract FlexModule {
         ++calls;
         lastSelector = msg.sig;
         if (revertAlways) revert Nope();
+        uint256 b = bombBytes;
+        if (b != 0) {
+            assembly {
+                return(0, b)
+            }
+        }
+    }
+}
+
+/// @dev A sink whose `due()` answers with garbage, and whose `poke` always reverts.
+contract DirtySink {
+    uint256 public dueWord = 2;
+
+    function setDueWord(uint256 w) external {
+        dueWord = w;
+    }
+
+    function due() external view returns (uint256) {
+        return dueWord;
+    }
+
+    function poke() external pure {
+        revert("no");
+    }
+}
+
+/// @dev An observer that swaps in another charged pool while the outer swap is in flight.
+contract Nester {
+    PoolSwapTest immutable router;
+    PoolKey key;
+    bool zeroForOne;
+
+    constructor(PoolSwapTest r, PoolKey memory k, bool zfo) {
+        router = r;
+        key = k;
+        zeroForOne = zfo;
+    }
+
+    receive() external payable {}
+
+    fallback() external {
+        router.swap{value: key.currency0.isAddressZero() ? 1000 : 0}(
+            key,
+            SwapParams(
+                zeroForOne, -1000, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            ),
+            PoolSwapTest.TestSettings(false, false),
+            ""
+        );
     }
 }
 
@@ -353,14 +419,192 @@ abstract contract HiveSuite is HiveBase {
         assertEq(hook.totalFees(), BIG / 10 * 125 / 10000);
     }
 
-    function test_swapsMustBringGasForObservers() public {
+    function test_lowGasSkipsObserversInsteadOfReverting() public {
         FlexModule o = new FlexModule();
         _govern(
             abi.encodeCall(ISwarmlingsHook.setModules, (_module(address(o), Callbacks.BEFORE_SWAP, false)))
         );
         vm.prank(address(manager));
-        vm.expectRevert(SwarmlingsHook.InsufficientGas.selector);
-        hook.beforeSwap{gas: 150_000}(alice, launchKey, SwapParams(rewardFirst, -1e9, 0), "");
+        vm.expectEmit(true, false, false, false);
+        emit SwarmlingsHook.ModuleFailed(address(o), bytes4(0));
+        hook.beforeSwap{gas: 150_000}(alice, launchKey, SwapParams(rewardFirst, 1e9, 0), "");
+        assertEq(o.calls(), 0);
+    }
+
+    // ------------------------------------------------------------------ audit regressions (2026-10-10)
+
+    function test_audit_badQuotersNeverBlockSells() public {
+        FlexModule q = new FlexModule();
+        _govern(abi.encodeCall(ISwarmlingsHook.setModules, (_module(address(q), Callbacks.QUOTE, false))));
+        _give(alice, UNIT * 4);
+        q.setExtra(type(uint256).max); // would overflow a naive add
+        uint256 f = hook.totalFees();
+        _sellExactIn(alice, UNIT);
+        uint256 got = hook.totalFees() - f;
+        assertGt(got, 0);
+        _buyExactIn(bob, BIG / 10);
+        assertEq(hook.totalFees() - f - got, BIG / 10 * 500 / 10000, "clamped to the cap");
+        q.setSilentQuote(true); // returns no data
+        f = hook.totalFees();
+        vm.expectEmit(true, false, false, true);
+        emit SwarmlingsHook.ModuleFailed(address(q), FlexModule.quoteFee.selector);
+        _sellExactIn(alice, UNIT);
+        assertGt(hook.totalFees(), f, "sold at the normal fee");
+    }
+
+    function test_audit_dirtySinkNeverBlocksSwaps() public {
+        DirtySink d = new DirtySink();
+        vm.prank(address(d));
+        manager.setOperator(address(hook), true);
+        _govern(abi.encodeCall(ISwarmlingsHook.setSlices, (_slice(address(d), 100, true))));
+        _give(alice, UNIT * 2);
+        _sellExactIn(alice, UNIT); // due() returns 2: not due, nothing reverts
+        d.setDueWord(1);
+        vm.expectEmit(true, false, false, true);
+        emit SwarmlingsHook.SinkFailed(address(d)); // due, poke reverts: logged
+        _buyExactIn(bob, BIG / 10);
+    }
+
+    function test_audit_returnDataBombIsNotPaidByTraders() public {
+        FlexModule o = new FlexModule();
+        o.setBomb(300_000);
+        ISwarmlingsHook.Module[] memory m = new ISwarmlingsHook.Module[](8);
+        for (uint256 i; i < 8; ++i) {
+            FlexModule x = i == 0 ? o : new FlexModule();
+            x.setBomb(300_000);
+            m[i] = ISwarmlingsHook.Module(
+                address(x), Callbacks.BEFORE_SWAP | Callbacks.AFTER_SWAP | Callbacks.QUOTE, false
+            );
+        }
+        _govern(abi.encodeCall(ISwarmlingsHook.setModules, (m)));
+        _give(alice, UNIT * 2);
+        uint256 g = gasleft();
+        _sellExactIn(alice, UNIT);
+        uint256 used = g - gasleft();
+        assertLt(used, 6_000_000, "24 bombing calls cost at most their gas caps");
+    }
+
+    function test_audit_nestedSwapKeepsTheOuterFee() public {
+        PoolKey memory other = launchKey;
+        other.fee = 3000;
+        manager.initialize(other, TickMath.getSqrtPriceAtTick(startTick));
+        _dealReward(launcher, 100 * BIG);
+        vm.prank(launcher);
+        modifyLiquidityRouter.modifyLiquidity{value: native ? 10 * BIG : 0}(
+            other,
+            ModifyLiquidityParams(TickMath.minUsableTick(SPACING), TickMath.maxUsableTick(SPACING), 1e20, 0),
+            ""
+        );
+        Nester nester = new Nester(swapRouter, other, rewardFirst);
+        _dealReward(address(nester), BIG);
+        if (!native) {
+            vm.prank(address(nester));
+            MockERC20(IMD).approve(address(swapRouter), type(uint256).max);
+        }
+        _govern(
+            abi.encodeCall(
+                ISwarmlingsHook.setModules, (_module(address(nester), Callbacks.BEFORE_SWAP, false))
+            )
+        );
+        _give(alice, UNIT * 2);
+        uint256 f = hook.totalFees();
+        uint256 r = _rbal(alice);
+        _sellExactIn(alice, UNIT);
+        uint256 got = _rbal(alice) - r;
+        uint256 fee = hook.totalFees() - f;
+        assertGe(fee, (got + fee) * 125 / 10000, "the outer sell paid its full fee despite the nested swap");
+    }
+
+    function test_audit_jitTopUpIsPenalizedToo() public {
+        int24 lo = TickMath.minUsableTick(SPACING);
+        int24 hi = TickMath.maxUsableTick(SPACING);
+        // a JIT provider opens a position through a router that tolerates mixed-sign deltas
+        _dealReward(carol, 100 * BIG);
+        _give(carol, 100_000_000e18);
+        vm.startPrank(carol);
+        ling.approve(address(modifyLiquidityNoChecks), type(uint256).max);
+        if (!native) MockERC20(IMD).approve(address(modifyLiquidityNoChecks), type(uint256).max);
+        modifyLiquidityNoChecks.modifyLiquidity{value: native ? 5 * BIG : 0}(
+            launchKey, ModifyLiquidityParams(lo, hi, 1e18, 0), ""
+        );
+        vm.stopPrank();
+        _buyExactIn(alice, BIG); // the victim trade earns the position fees
+        uint256 before = hook.totalFees();
+        vm.roll(block.number + 1);
+        vm.prank(carol);
+        modifyLiquidityNoChecks.modifyLiquidity{value: native ? BIG : 0}(
+            launchKey, ModifyLiquidityParams(lo, hi, 1e6, 0), ""
+        ); // the dust top-up collects the fees
+        uint256 penalty = hook.totalFees() - before;
+        assertGt(penalty, 0, "the fees collected by the top-up were penalized");
+        vm.prank(carol);
+        modifyLiquidityNoChecks.modifyLiquidity(launchKey, ModifyLiquidityParams(lo, hi, -1e18, 0), "");
+        assertEq(hook.totalFees(), before + penalty, "nothing left to collect at the remove");
+        assertEq(hook.totalFees(), hook.distributed() + hook.pendingFees(), "ledger");
+    }
+
+    function test_audit_failingSinkDoesNotStarveTheNext() public {
+        DirtySink d = new DirtySink();
+        d.setDueWord(1);
+        vm.prank(address(d));
+        manager.setOperator(address(hook), true);
+        TreasurySink t = new TreasurySink(hook, dev, 1);
+        ISwarmlingsHook.Slice[] memory s = new ISwarmlingsHook.Slice[](2);
+        s[0] = ISwarmlingsHook.Slice(address(d), 100, true);
+        s[1] = ISwarmlingsHook.Slice(address(t), 100, true);
+        _govern(abi.encodeCall(ISwarmlingsHook.setSlices, (s)));
+        uint256 before = _rbal(dev);
+        _buyExactIn(alice, BIG);
+        assertEq(_rbal(dev) - before, BIG * 100 / 10000, "the healthy sink was poked after the failing one");
+        assertEq(hook.pokeCursor(), 0, "the round moved on past both");
+    }
+
+    function test_audit_dueSinkDoesNotMakeLowGasSwapsRevert() public {
+        TreasurySink t = new TreasurySink(hook, dev, 1);
+        _govern(abi.encodeCall(ISwarmlingsHook.setSlices, (_slice(address(t), 100, true))));
+        _give(alice, UNIT * 2);
+        _buyExactIn(bob, BIG); // poked here: the sink is empty again
+        _buyExactOut(bob, UNIT); // fee after the swap: poked again
+        assertEq(_claims(address(t), reward), 0);
+        // a sell with little gas: the fee makes the sink due inside the swap, but the poke is simply skipped
+        vm.prank(alice);
+        swapRouter.swap{gas: 400_000}(
+            launchKey,
+            SwapParams(
+                !rewardFirst,
+                -int256(UNIT),
+                !rewardFirst ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            ),
+            PoolSwapTest.TestSettings(false, false),
+            ""
+        );
+        assertGt(_claims(address(t), reward), 0, "left for the next swap");
+    }
+
+    function test_audit_twapHasNoLag() public {
+        TwapOracle o = new TwapOracle(hook);
+        _govern(
+            abi.encodeCall(ISwarmlingsHook.setModules, (_module(address(o), Callbacks.BEFORE_SWAP, false)))
+        );
+        _buyExactIn(alice, 1e9);
+        skip(1 hours);
+        _buyExactIn(alice, 1e9);
+        int24 before = o.lastTick();
+        _give(bob, 150_000_000e18);
+        _sellExactIn(bob, 150_000_000e18); // the dump
+        int24 after_ = o.lastTick();
+        assertLt(after_, before);
+        skip(2 hours);
+        assertApproxEqAbs(o.consult(1 hours), after_, 2, "after two quiet hours the mean is the new price");
+    }
+
+    function test_audit_sinkCannotBeTheHook() public {
+        vm.prank(address(council));
+        vm.expectRevert(SwarmlingsHook.BadEntry.selector);
+        hook.setSlices(_slice(address(hook), 100, false));
+        vm.prank(address(council));
+        vm.expectRevert(SwarmlingsHook.BadEntry.selector);
+        hook.setSlices(_slice(address(ling), 100, false));
     }
 
     function test_maxBuyGuard() public {

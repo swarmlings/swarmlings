@@ -40,7 +40,7 @@ Holders earn two things, equally per NFT and **per second held**:
 | Source | Currency | Split |
 | --- | --- | --- |
 | Swap fees: 1.25% of every buy and sell | IMD on Ethereum mainnet (native ETH on testnets) | 100% to holders |
-| Creator fee: 5% of every NFT sale on marketplaces (ERC-2981) | ETH (WETH is unwrapped) | 50% holders, 50% `DEV` |
+| Creator fee: 5% of every NFT sale on marketplaces (ERC-2981) | ETH (the chain's WETH is unwrapped; other tokens are not recoverable) | 50% holders, 50% `DEV` |
 
 - **Paid by day.** Everything that reaches the token during one UTC day is paid out the next day at a
   constant rate per second, to whoever holds NFTs during that time. Holding for a moment earns a moment's
@@ -49,8 +49,9 @@ Holders earn two things, equally per NFT and **per second held**:
   existence sends its share back to the queue.
 - **Settled on every move.** Before any NFT changes owner (ERC-20 transfers, mints, burns, marketplace NFT
   transfers), both sides are settled. A seller keeps everything their NFTs earned; a buyer earns from then on.
-- **Claim:** `pending(holder)` returns `(eth, token)`; `claim()` pays both. `claimDev()` sends DEV its half of
-  the creator fees (anyone may call it; the ETH only goes to DEV). DEV never receives swap fees.
+- **Claim:** `pending(holder)` returns `(eth, token)`; `claim()` pays both, `claimEth()` and `claimToken()`
+  one at a time. `claimDev()` sends DEV its half of the creator fees (anyone may call it; the ETH only goes to
+  DEV). DEV never receives swap fees.
 - Plain ETH sent to the token counts as a creator fee at the next `syncEth()` (anyone; `claim` runs it too).
   The hook sends swap fees with `addRewards()` (ETH) or as IMD followed by `syncToken()`.
 - Traits are cosmetic. Every NFT earns the same share.
@@ -59,8 +60,9 @@ Holders earn two things, equally per NFT and **per second held**:
 
 - The NFT contract (`SwarmlingsMirror`) reports a 5% royalty to the token (ERC-2981) and implements OpenSea's
   creator-fee enforcement (ERC721-C): every NFT transfer made through the NFT contract is checked by OpenSea's
-  transfer validator `0xA000027A9B2802E1ddf7000061001e5c005A0000`. Owners can always move their own NFTs;
-  marketplaces must be authorized (OpenSea authorizes orders that pay the fee). The validator is a constant.
+  transfer validator `0xA000027A9B2802E1ddf7000061001e5c005A0000`. By default owners move their own NFTs and
+  marketplaces must be authorized (OpenSea authorizes orders that pay the fee). The validator address is a
+  constant; its policy for this collection is set by the collection editor on OpenSea.
 - **Limits, by design:** moving LING moves NFTs too (DN404), and that path is never validated, so holders can
   never be locked out, but a sale settled by transferring LING pays no creator fee. Marketplaces that are not
   authorized by the validator cannot transfer the NFT.
@@ -99,9 +101,10 @@ need at most 800; a wallet holding more than 240,000,000 LING is not meant to ho
 - Holder fees are minted as ERC-6909 claims during the swap. Once `minDistribute` has accrued (0.01 ETH, or
   5 IMD), the next swap hands them to the token; `distribute()` does the same for anyone.
 - **Slices** send an extra share of each fee to *sinks* that spend it only through the hook (`buy`,
-  `addLiquidity`, `collectFees`, `take`). **Modules** subscribe to callbacks: guards may revert buys, liquidity
-  additions and donations; observers and quoters run gas-capped and can never block a trade. No module can
-  ever revert a sell or a liquidity removal.
+  `addLiquidity`, `collectFees`, `take`), at most once per block. **Modules** subscribe to callbacks: guards
+  may revert buys, liquidity additions and donations; observers and quoters run gas-capped, their return data
+  is never copied, and a bad answer counts as no answer, so they can never block a trade or make it cost more
+  than their cap. No module can ever revert a sell or a liquidity removal.
 - **Snipe tax:** for the first 60 seconds after the launch pool opens, buys pay an extra fee that starts at
   40% and falls linearly to zero (`snipeBps()`), on top of everything else and outside the council's cap. It
   goes to holders. Sells never pay it.
@@ -124,7 +127,7 @@ forge test
 Solidity 0.8.26, Cancun, optimizer 200 runs, no IR, `bytecode_hash = "none"`. Dependencies are vendored
 under `lib/` (see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)); tests need no network or RPC.
 
-The suite (192 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
+The suite (236 tests) runs against a real v4 PoolManager in three pairings (native ETH; IMD as currency0;
 IMD as currency1): all four fee modes with exact amounts, partial fills, other pools and launch-pool
 hijacking, unit boundaries (299,999.99 vs 300,000 LING), contracts skipping NFTs and EIP-7702 wallets not,
 marketplace NFT sales, burns, `keep`, day-by-day payouts and quiet days, a flash-loan attempt to snipe a
@@ -133,7 +136,8 @@ on mainnet, a LING-only seeded pool, a 100-NFT whale buy, reentrancy on `claim` 
 validator, the renderer fallback, and stateful invariants (hook ledger, solvency, booked claims, NFT counts,
 nothing lost once every day has paid out). `test/Hive.t.sol` covers the council, slice and module
 validation, the fee split in all four modes, guards that revert buys but never sells, observers that fail
-without blocking, the fee cap, every shipped primitive, and the hook-owned liquidity position, and the snipe tax (decay, sells exempt, outside the cap).
+without blocking, the fee cap, every shipped primitive, and the hook-owned liquidity position, the snipe tax (decay, sells exempt, outside the cap), and one regression
+test per finding of the 2026-10-10 audit (`test_audit_*`; see [docs/audit](docs/audit/2026-10-10/)).
 `test/fork/` repeats the validator and IMD checks against the real mainnet contracts when
 `MAINNET_RPC_URL` is set.
 
